@@ -20,9 +20,10 @@ AI 기반 여행 계획 · 기록 웹서비스
 ```bash
 cd tteonayo-server
 npm install
-cp .env.example .env      # JWT_SECRET 값 채우기
 npm start
 ```
+
+> 포트·JWT 서명키를 바꾸려면 `tteonayo-server/.env` 파일을 만들어 `PORT` / `JWT_SECRET` 지정 (안 해도 기본값으로 실행됨).
 
 **2) 프론트엔드** (포트 5173)
 
