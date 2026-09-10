@@ -1,0 +1,24 @@
+# 의존성
+**/node_modules/
+
+# 빌드 결과물
+**/dist/
+**/build/
+
+# 환경변수 · 비밀값
+**/.env
+**/.env.*
+!**/.env.example
+
+# 백엔드 로컬 DB (사용자 계정·비밀번호 해시 포함 — 절대 커밋 금지)
+tteonayo-server/tteonayo.json
+
+# 로그 · OS
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# 에디터
+.vscode/
+.idea/

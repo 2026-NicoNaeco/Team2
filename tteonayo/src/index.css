@@ -1,0 +1,64 @@
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.css');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+/* 제목용: Gmarket Sans (지마켓 산스) — Google Fonts에 없어서 @font-face로 직접 로드 */
+@font-face {
+  font-family: 'Gmarket Sans';
+  src: url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_2001@1.1/GmarketSansLight.woff') format('woff');
+  font-weight: 300;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Gmarket Sans';
+  src: url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_2001@1.1/GmarketSansMedium.woff') format('woff');
+  font-weight: 400 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Gmarket Sans';
+  src: url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_2001@1.1/GmarketSansBold.woff') format('woff');
+  font-weight: 600 700;
+  font-display: swap;
+}
+
+@theme {
+  /* 디자인 원본의 CSS 변수를 Tailwind 토큰으로 매핑 */
+  --color-paper: #F7F2E7;
+  --color-ink: #22303C;
+  --color-ink-soft: #45525C; /* 본문 보조 텍스트 (기존 갈색보다 대비 ↑) */
+  --color-muted: #6B6353; /* 라벨·캡션 */
+  --color-teal: #2F6F6B;
+  --color-teal-deep: #1D4A47;
+  --color-pin: #D64545;
+  --color-sand: #E7DCC4;
+  --color-line: #D8CDB2;
+
+  /* 크림색 배경 위에서 흰 카드가 떠 보이도록 */
+  --shadow-card: 0 1px 2px rgba(34, 48, 60, 0.04), 0 6px 22px -10px rgba(34, 48, 60, 0.16);
+
+  /* 본문: Pretendard — 한글/영문 모두 균형 잡힌 현대적 산세리프.
+     제목: Gmarket Sans — 또렷하고 개성 있는 디스플레이 한글 서체.
+     Fraunces·Noto Serif KR은 한글 본문에서 딱딱하게 보여 교체함. */
+  --font-display: 'Gmarket Sans', 'Pretendard Variable', Pretendard, sans-serif;
+  --font-sans: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont,
+    'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'Pretendard Variable', Pretendard, monospace;
+}
+
+body {
+  margin: 0;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  word-break: keep-all;
+}
+
+/* 일정판 "PDF 저장"(브라우저 인쇄) 시 캔버스만 깔끔하게 남기기 */
+@media print {
+  body {
+    background: #fff;
+  }
+}
