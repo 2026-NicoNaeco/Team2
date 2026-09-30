@@ -23,20 +23,26 @@ export interface ChatMessage {
   id: string;
   sender: 'ai' | 'user';
   text: string;
+  createdAt?: string;
   // AI가 제안하는 추천 코스 — 각 장소를 "다이어리(일정판)"로 보낼 수 있음
   course?: { placeId: string; time: string }[];
 }
 
-export interface DiaryEntry {
+export interface ChatConversation {
+  id: string;
+  region: string;
+  title: string;
+  messages: ChatMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DiaryNote {
   id: string;
   folderId: string;
-  dayLabel: string;
-  rating: number;
-  imageUrl: string;
   title: string;
   content: string;
-  comments: number;
-  likes: number;
+  updatedAt: string;
 }
 
 export interface DiaryFolder {
@@ -54,6 +60,7 @@ export interface BoardCard {
   icon?: string;
   time?: string;
   imageUrl?: string;
+  placeId?: string;
 }
 
 // 일정판 카드 사이를 잇는 동선 연결선
@@ -61,4 +68,13 @@ export interface BoardConnection {
   id: string;
   from: string; // BoardCard.id
   to: string; // BoardCard.id
+}
+
+export interface SavedBoard {
+  id: string;
+  title: string;
+  cards: BoardCard[];
+  connections: BoardConnection[];
+  createdAt: string;
+  updatedAt: string;
 }

@@ -1,11 +1,10 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   places as seedPlaces,
-  boardCards as seedBoardCards,
-  boardConnections as seedConnections,
   diaryFolders as seedFolders,
 } from '../data/mockData';
-import type { BoardCard, BoardConnection, DiaryFolder, Place } from '../types';
+import type { BoardCard, BoardConnection, DiaryFolder, DiaryNote, Place, SavedBoard } from '../types';
+import { useAuth } from './AuthContext';
 
 // 지도 · AI채팅 · 일정판 · 기록함이 공유하는 여행 데이터.
 // 기획서의 "기록 → AI 분석 → 다음 여행 계획" 흐름을 위해 한 곳에서 관리하고,
@@ -34,10 +33,22 @@ interface TripContextValue {
   addConnection: (from: string, to: string) => void;
   removeConnection: (id: string) => void;
 
+  savedBoards: SavedBoard[];
+  activeBoardId: string | null;
+  hasUnsavedBoardChanges: boolean;
+  saveBoard: (title: string) => string;
+  openBoard: (id: string) => boolean;
+  createBoard: () => void;
+  deleteBoard: (id: string) => void;
+
   diaryFolders: DiaryFolder[];
+  diaryNotes: DiaryNote[];
   addDiaryFolder: (name: string) => void;
   renameDiaryFolder: (id: string, name: string) => void;
   removeDiaryFolder: (id: string) => void;
+  addDiaryNote: (folderId: string) => string;
+  updateDiaryNote: (id: string, title: string, content: string) => void;
+  removeDiaryNote: (id: string) => void;
 
   activityLog: string[];
   logActivity: (msg: string) => void;
@@ -45,10 +56,9 @@ interface TripContextValue {
 
 const TripContext = createContext<TripContextValue | null>(null);
 
-// 시드 데이터(장소·일정판 카드 등)가 바뀌면 SCHEMA 숫자를 올린다.
-// 그러면 예전에 저장된 상태를 버리고 새 시드로 다시 시작한다.
 const SCHEMA = 4;
-const LS_KEY = `tteonayo:trip:v${SCHEMA}`;
+const legacyKeys = Array.from({ length: SCHEMA }, (_, index) => `tteonayo:trip:v${SCHEMA - index}`).concat('tteonayo:trip');
+const storageKey = (userId: number) => `tteonayo:trip:user:${userId}:v${SCHEMA}`;
 
 interface Persisted {
   positions?: Record<string, { lat: number; lng: number }>;
@@ -58,31 +68,58 @@ interface Persisted {
   boardCards?: BoardCard[];
   connections?: BoardConnection[];
   diaryFolders?: DiaryFolder[];
+  diaryNotes?: DiaryNote[];
+  savedBoards?: SavedBoard[];
+  activeBoardId?: string | null;
 }
 
-function loadPersisted(): Persisted {
+function loadPersisted(userId: number): Persisted {
   try {
-    // 구버전 스키마 키 정리
-    for (let v = 1; v < SCHEMA; v++) localStorage.removeItem(`tteonayo:trip:v${v}`);
-    localStorage.removeItem('tteonayo:trip');
-    return JSON.parse(localStorage.getItem(LS_KEY) || '{}');
+    const key = storageKey(userId);
+    const current = localStorage.getItem(key);
+    const legacyKey = !current ? legacyKeys.find((candidate) => localStorage.getItem(candidate)) : undefined;
+    const data = JSON.parse(current ?? (legacyKey ? localStorage.getItem(legacyKey) : null) ?? '{}') as Persisted;
+    // 이전 메모장 버전에서 작성한 내용을 일정판의 메모 카드로 옮긴다.
+    if (!data.savedBoards && data.diaryNotes?.length) {
+      const folders = data.diaryFolders ?? seedFolders;
+      data.savedBoards = folders.flatMap((folder) => {
+        const notes = data.diaryNotes?.filter((note) => note.folderId === folder.id) ?? [];
+        if (!notes.length) return [];
+        const now = new Date().toISOString();
+        return [{
+          id: crypto.randomUUID(),
+          title: folder.name,
+          cards: notes.map((note, index) => ({
+            id: note.id, day: '메모', icon: '📝', title: note.title,
+            description: note.content, top: 40 + Math.floor(index / 3) * 190,
+            left: 40 + (index % 3) * 260,
+          })),
+          connections: [], createdAt: now, updatedAt: now,
+        }];
+      });
+    }
+    if (legacyKey) {
+      localStorage.setItem(key, JSON.stringify(data));
+      for (const oldKey of legacyKeys) localStorage.removeItem(oldKey);
+    }
+    return data;
   } catch {
     return {};
   }
 }
 
-// 로그아웃 시 호출 — 다음 사용자가 이전 사용자의 지도/일정판 데이터를 보지 않도록 정리
-export function clearPersistedTrip() {
-  try {
-    for (let v = 1; v <= SCHEMA; v++) localStorage.removeItem(`tteonayo:trip:v${v}`);
-    localStorage.removeItem('tteonayo:trip');
-  } catch {
-    /* 무시 */
-  }
+function persistBoardList(key: string, boards: SavedBoard[], activeId: string | null) {
+  const current = JSON.parse(localStorage.getItem(key) || '{}') as Persisted;
+  localStorage.setItem(key, JSON.stringify({
+    ...current, savedBoards: boards, activeBoardId: activeId,
+  }));
 }
 
 export function TripProvider({ children }: { children: ReactNode }) {
-  const persisted = useMemo(() => loadPersisted(), []);
+  const { user } = useAuth();
+  if (!user) throw new Error('여행 데이터는 로그인 후 이용할 수 있어요.');
+  const key = storageKey(user.id);
+  const persisted = useMemo(() => loadPersisted(user.id), [user.id]);
 
   const [places, setPlaces] = useState<Place[]>(() =>
     seedPlaces.map((p) => {
@@ -91,22 +128,17 @@ export function TripProvider({ children }: { children: ReactNode }) {
       return { ...p, name, ...(pos ? { lat: pos.lat, lng: pos.lng } : null) };
     })
   );
-  const [savedIds, setSavedIds] = useState<string[]>(
-    persisted.savedIds ?? ['suncheonman-garden', 'ocheon-cafe-street']
-  );
+  const [savedIds, setSavedIds] = useState<string[]>(persisted.savedIds ?? []);
   const [memos, setMemos] = useState<Record<string, string>>(persisted.memos ?? {});
-  const [boardCards, setBoardCards] = useState<BoardCard[]>(persisted.boardCards ?? seedBoardCards);
-  const [connections, setConnections] = useState<BoardConnection[]>(
-    persisted.connections ?? seedConnections
-  );
+  const [boardCards, setBoardCards] = useState<BoardCard[]>(persisted.boardCards ?? []);
+  const [connections, setConnections] = useState<BoardConnection[]>(persisted.connections ?? []);
+  const [savedBoards, setSavedBoards] = useState<SavedBoard[]>(persisted.savedBoards ?? []);
+  const [activeBoardId, setActiveBoardId] = useState<string | null>(persisted.activeBoardId ?? null);
   const [diaryFolders, setDiaryFolders] = useState<DiaryFolder[]>(
     persisted.diaryFolders ?? seedFolders
   );
-  const [activityLog, setActivityLog] = useState<string[]>([
-    '장소 카드 이동',
-    '메모 업데이트',
-    '코스 추가',
-  ]);
+  const [diaryNotes, setDiaryNotes] = useState<DiaryNote[]>(persisted.diaryNotes ?? []);
+  const [activityLog, setActivityLog] = useState<string[]>([]);
 
   // 변경사항 저장 (드래그 중 매 프레임 저장되지 않도록 디바운스)
   useEffect(() => {
@@ -125,15 +157,18 @@ export function TripProvider({ children }: { children: ReactNode }) {
         boardCards,
         connections,
         diaryFolders,
+        diaryNotes,
+        savedBoards,
+        activeBoardId,
       };
       try {
-        localStorage.setItem(LS_KEY, JSON.stringify(data));
+        localStorage.setItem(key, JSON.stringify(data));
       } catch {
         /* 저장 공간이 없거나 비공개 모드 — 무시 */
       }
     }, 350);
     return () => clearTimeout(t);
-  }, [places, savedIds, memos, boardCards, connections, diaryFolders]);
+  }, [key, places, savedIds, memos, boardCards, connections, diaryFolders, diaryNotes, savedBoards, activeBoardId]);
 
   const logActivity = (msg: string) => setActivityLog((prev) => [msg, ...prev].slice(0, 6));
 
@@ -158,7 +193,7 @@ export function TripProvider({ children }: { children: ReactNode }) {
     boardCards,
     addBoardCard: (card) => {
       // 이미 담긴 장소는 중복 추가하지 않음
-      const dup = boardCards.some((c) => c.title === card.title);
+      const dup = boardCards.some((c) => card.placeId ? c.placeId === card.placeId : c.title === card.title);
       if (dup) return false;
       const n = boardCards.length;
       setBoardCards((prev) => [
@@ -215,7 +250,63 @@ export function TripProvider({ children }: { children: ReactNode }) {
       logActivity('동선 연결 해제');
     },
 
+    savedBoards,
+    activeBoardId,
+    hasUnsavedBoardChanges: (() => {
+      const current = savedBoards.find((board) => board.id === activeBoardId);
+      return current
+        ? JSON.stringify(boardCards) !== JSON.stringify(current.cards) ||
+            JSON.stringify(connections) !== JSON.stringify(current.connections)
+        : boardCards.length > 0 || connections.length > 0;
+    })(),
+    saveBoard: (title) => {
+      const cleanTitle = title.trim();
+      if (!cleanTitle || cleanTitle.length > 80) throw new Error('일정판 이름은 1~80자로 입력해주세요.');
+      const now = new Date().toISOString();
+      const id = activeBoardId ?? crypto.randomUUID();
+      const previous = savedBoards.find((board) => board.id === id);
+      const board: SavedBoard = {
+        id, title: cleanTitle,
+        cards: boardCards.map((card) => ({ ...card })),
+        connections: connections.map((connection) => ({ ...connection })),
+        createdAt: previous?.createdAt ?? now,
+        updatedAt: now,
+      };
+      const next = previous
+        ? savedBoards.map((item) => item.id === id ? board : item)
+        : [board, ...savedBoards];
+      persistBoardList(key, next, id);
+      setSavedBoards(next);
+      setActiveBoardId(id);
+      return id;
+    },
+    openBoard: (id) => {
+      const board = savedBoards.find((item) => item.id === id);
+      if (!board) return false;
+      setBoardCards(board.cards.map((card) => ({ ...card })));
+      setConnections(board.connections.map((connection) => ({ ...connection })));
+      setActiveBoardId(id);
+      return true;
+    },
+    createBoard: () => {
+      setBoardCards([]);
+      setConnections([]);
+      setActiveBoardId(null);
+    },
+    deleteBoard: (id) => {
+      const next = savedBoards.filter((item) => item.id !== id);
+      const nextActiveId = activeBoardId === id ? null : activeBoardId;
+      persistBoardList(key, next, nextActiveId);
+      setSavedBoards(next);
+      if (activeBoardId === id) {
+        setBoardCards([]);
+        setConnections([]);
+        setActiveBoardId(null);
+      }
+    },
+
     diaryFolders,
+    diaryNotes,
     addDiaryFolder: (name) => {
       const trimmed = name.trim();
       if (!trimmed) return;
@@ -226,8 +317,24 @@ export function TripProvider({ children }: { children: ReactNode }) {
       if (!trimmed) return;
       setDiaryFolders((prev) => prev.map((f) => (f.id === id ? { ...f, name: trimmed } : f)));
     },
-    removeDiaryFolder: (id) =>
-      setDiaryFolders((prev) => (prev.length <= 1 ? prev : prev.filter((f) => f.id !== id))),
+    removeDiaryFolder: (id) => {
+      if (diaryFolders.length <= 1) return;
+      setDiaryFolders((prev) => prev.filter((f) => f.id !== id));
+      setDiaryNotes((prev) => prev.filter((note) => note.folderId !== id));
+    },
+    addDiaryNote: (folderId) => {
+      const id = crypto.randomUUID();
+      setDiaryNotes((prev) => [
+        { id, folderId, title: '새 메모', content: '', updatedAt: new Date().toISOString() },
+        ...prev,
+      ]);
+      return id;
+    },
+    updateDiaryNote: (id, title, content) =>
+      setDiaryNotes((prev) => prev.map((note) =>
+        note.id === id ? { ...note, title: title.trim(), content, updatedAt: new Date().toISOString() } : note
+      )),
+    removeDiaryNote: (id) => setDiaryNotes((prev) => prev.filter((note) => note.id !== id)),
 
     activityLog,
     logActivity,

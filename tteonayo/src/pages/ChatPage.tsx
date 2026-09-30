@@ -1,234 +1,212 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Topbar from '../components/Topbar';
-import { chatMessages as initialMessages } from '../data/mockData';
-import { useTrip } from '../context/TripContext';
-import type { ChatMessage, Place } from '../types';
+import { useAuth } from '../context/AuthContext';
+import { fetchRegionWeather, type RegionWeather } from '../services/weather';
+import type { ChatConversation, ChatMessage } from '../types';
 
-const REPLY_TIMES = ['10:00', '13:00', '15:30', '18:00'];
-
-// TODO: 실제 LLM(OpenAI API) 연동 지점. 지금은 저장한 장소 + 날씨를 반영한 형태의
-// 응답을 규칙 기반으로 생성합니다 (POST /api/chat 로 교체 예정).
-function buildAiReply(saved: Place[], all: Place[]): ChatMessage {
-  const pool = saved.length >= 3 ? saved : all;
-  const picks = pool.slice(0, 4);
-  return {
-    id: crypto.randomUUID(),
-    sender: 'ai',
-    text:
-      saved.length > 0
-        ? `저장하신 장소 ${saved.length}곳과 현재 순천 날씨(맑음 · 18°C)를 반영해 코스를 구성했어요. 필요한 장소는 "+ 다이어리"로 일정판에 담아보세요.`
-        : '아직 저장한 장소가 없어서 인기 스팟 위주로 코스를 짜봤어요. 지도에서 장소를 저장하면 취향을 더 정확히 반영할 수 있어요.',
-    course: picks.map((p, i) => ({ placeId: p.id, time: REPLY_TIMES[i] ?? '' })),
-  };
+function loadConversations(userId: number): ChatConversation[] {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(`tteonayo:chat:${userId}`) || '[]');
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((item): item is ChatConversation =>
+      item !== null && typeof item === 'object' &&
+      typeof item.id === 'string' && typeof item.region === 'string' &&
+      typeof item.title === 'string' && Array.isArray(item.messages) &&
+      typeof item.createdAt === 'string' && typeof item.updatedAt === 'string'
+    );
+  } catch {
+    return [];
+  }
 }
 
+type WeatherState =
+  | { status: 'idle' | 'loading' }
+  | { status: 'success'; value: RegionWeather }
+  | { status: 'error'; message: string };
+
 export default function ChatPage() {
-  const { places, savedIds, boardCards, addBoardCard } = useTrip();
-  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const userId = user?.id ?? 0;
+  const [conversations, setConversations] = useState<ChatConversation[]>(() => loadConversations(userId));
+  const [selectedId, setSelectedId] = useState<string | null>(() => loadConversations(userId)[0]?.id ?? null);
+  const [newRegion, setNewRegion] = useState('');
+  const [showNewForm, setShowNewForm] = useState(false);
   const [input, setInput] = useState('');
-  const [thinking, setThinking] = useState(false);
+  const [storageError, setStorageError] = useState('');
+  const [weather, setWeather] = useState<WeatherState>({ status: 'idle' });
   const scrollRef = useRef<HTMLDivElement>(null);
+  const active = conversations.find((item) => item.id === selectedId) ?? null;
+  const ordered = [...conversations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, thinking]);
+    try {
+      localStorage.setItem(`tteonayo:chat:${userId}`, JSON.stringify(conversations));
+      setStorageError('');
+    } catch {
+      setStorageError('대화를 이 브라우저에 저장하지 못했습니다. 저장 공간을 확인해주세요.');
+    }
+  }, [conversations, userId]);
 
-  const savedPlaces = places.filter((p) => savedIds.includes(p.id));
-  const placeById = (id: string) => places.find((p) => p.id === id);
-  const isOnBoard = (title: string) => boardCards.some((c) => c.title === title);
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [active?.messages.length, selectedId]);
 
-  const handleSend = () => {
-    const text = input.trim();
-    if (!text || thinking) return;
-    setMessages((prev) => [...prev, { id: crypto.randomUUID(), sender: 'user', text }]);
+  useEffect(() => {
+    if (!active?.region) {
+      setWeather({ status: 'idle' });
+      return;
+    }
+    const controller = new AbortController();
+    setWeather({ status: 'loading' });
+    fetchRegionWeather(active.region, controller.signal)
+      .then((value) => setWeather({ status: 'success', value }))
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setWeather({ status: 'error', message: error instanceof Error ? error.message : '날씨를 불러오지 못했습니다.' });
+      });
+    return () => controller.abort();
+  }, [active?.region]);
+
+  const createConversation = () => {
+    const region = newRegion.trim();
+    if (region.length < 2 || region.length > 50) return;
+    const now = new Date().toISOString();
+    const conversation: ChatConversation = {
+      id: crypto.randomUUID(), region, title: `${region} 여행`,
+      messages: [], createdAt: now, updatedAt: now,
+    };
+    setConversations((previous) => [conversation, ...previous]);
+    setSelectedId(conversation.id);
+    setNewRegion('');
     setInput('');
-    setThinking(true);
-    // 실제 API 응답을 흉내내기 위한 지연
-    setTimeout(() => {
-      setMessages((prev) => [...prev, buildAiReply(savedPlaces, places)]);
-      setThinking(false);
-    }, 700);
+    setShowNewForm(false);
+  };
+
+  const deleteConversation = (id: string) => {
+    const conversation = conversations.find((item) => item.id === id);
+    if (!conversation || !window.confirm(`'${conversation.title}' 대화를 삭제할까요?`)) return;
+    const next = conversations.filter((item) => item.id !== id);
+    setConversations(next);
+    if (selectedId === id) setSelectedId(next[0]?.id ?? null);
+  };
+
+  const sendMessage = () => {
+    const text = input.trim();
+    if (!active || !text || text.length > 2000) return;
+    const now = new Date().toISOString();
+    const message: ChatMessage = { id: crypto.randomUUID(), sender: 'user', text, createdAt: now };
+    setConversations((previous) => previous.map((item) => item.id === active.id
+      ? { ...item, messages: [...item.messages, message], updatedAt: now }
+      : item
+    ));
+    setInput('');
   };
 
   return (
     <>
-      <Topbar title="AI 여정 설계 컨설팅" stamp={`📌 ${savedIds.length}개 장소 연동됨`} />
-      <div className="flex-1 overflow-y-auto p-8">
-        <div className="flex gap-5 h-[calc(100vh-220px)]">
-          {/* 채팅 창 */}
-          <div className="flex-[1.4] bg-white border border-line rounded-2xl flex flex-col overflow-hidden">
-            <div className="border-b border-line px-5 py-3 flex items-center gap-2 bg-paper">
-              <span className="w-7 h-7 rounded-full bg-teal flex items-center justify-center text-white text-[13px] font-display font-bold">
-                AI
-              </span>
-              <div className="leading-tight">
-                <div className="text-[13px] font-semibold">떠나요 AI</div>
-                <div className="text-[11px] text-teal">● 온라인</div>
+      <Topbar title="여행 AI 채팅" stamp={active ? active.region : '새 여행 시작'} />
+      <div className="flex-1 min-h-0 overflow-y-auto p-4 lg:p-6">
+        <div className="h-full min-h-[360px] flex flex-col lg:flex-row gap-4">
+          <aside className="w-full lg:w-[200px] xl:w-[220px] shrink-0 bg-white border border-line rounded-2xl p-3 flex flex-col gap-3 lg:max-h-full">
+            <button type="button" onClick={() => setShowNewForm((value) => !value)}
+              className="w-full rounded-xl bg-teal-deep text-white py-2.5 text-sm font-semibold cursor-pointer border-none">＋ 새 지역 대화</button>
+            {showNewForm && (
+              <div className="rounded-xl bg-paper p-3 flex flex-col gap-2">
+                <label htmlFor="new-chat-region" className="text-xs font-semibold text-teal-deep">가고 싶은 지역</label>
+                <input id="new-chat-region" autoFocus value={newRegion} maxLength={50}
+                  onChange={(event) => setNewRegion(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') createConversation(); }}
+                  placeholder="예: 순천, 제주, 도쿄" className="w-full box-border rounded-lg border border-line bg-white px-3 py-2 text-sm outline-teal" />
+                <button type="button" onClick={createConversation} disabled={newRegion.trim().length < 2}
+                  className="rounded-lg bg-teal text-white py-2 text-xs cursor-pointer border-none disabled:opacity-50">대화 만들기</button>
               </div>
-            </div>
-
-            <div ref={scrollRef} className="flex-1 p-6 overflow-y-auto flex flex-col gap-4">
-              {messages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`max-w-[78%] px-4 py-3 rounded-2xl text-[13.5px] leading-relaxed ${
-                    msg.sender === 'ai'
-                      ? 'bg-paper border border-line self-start rounded-bl-sm'
-                      : 'bg-teal-deep text-white self-end rounded-br-sm'
-                  }`}
-                >
-                  {msg.text}
-                  {msg.course && msg.course.length > 0 && (
-                    <div className="mt-3 flex flex-col gap-2">
-                      <div className="text-[11px] font-semibold text-pin">📍 추천 코스</div>
-                      {msg.course.map(({ placeId, time }) => {
-                        const place = placeById(placeId);
-                        if (!place) return null;
-                        const added = isOnBoard(place.name);
-                        return (
-                          <div
-                            key={placeId}
-                            className="bg-white border border-line rounded-xl px-3 py-2.5 flex items-center gap-3"
-                          >
-                            <span className="w-8 h-8 rounded-lg bg-sand flex items-center justify-center text-[15px] shrink-0">
-                              {place.icon}
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <div className="text-[12.5px] font-semibold text-ink truncate">
-                                {place.name}
-                              </div>
-                              <div className="text-[11px] text-[#8B8272] font-mono">{time}</div>
-                            </div>
-                            <button
-                              disabled={added}
-                              onClick={() =>
-                                addBoardCard({
-                                  day: '추천 코스',
-                                  time,
-                                  icon: place.icon,
-                                  title: place.name,
-                                  description: place.description,
-                                })
-                              }
-                              className={`shrink-0 text-[11px] rounded-lg px-2.5 py-1.5 font-semibold border cursor-pointer transition-colors ${
-                                added
-                                  ? 'bg-[#E9F0E7] text-[#4C7A3F] border-[#E9F0E7] cursor-default'
-                                  : 'bg-white text-teal-deep border-line hover:border-teal hover:text-teal'
-                              }`}
-                            >
-                              {added ? '✓ 추가됨' : '+ 다이어리'}
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              ))}
-              {thinking && (
-                <div className="self-start bg-paper border border-line rounded-2xl rounded-bl-sm px-4 py-3 text-[13px] text-[#8B8272]">
-                  코스를 구성하는 중…
-                </div>
-              )}
-            </div>
-
-            <div className="border-t border-line px-4.5 py-3.5 flex gap-2.5 bg-white">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                placeholder="실시간 날씨, 최적 동선, 예산 산출 등 무엇이든 물어보세요..."
-                className="flex-1 border border-line rounded-[10px] px-3.5 py-2.5 text-[13px] outline-none focus:border-teal"
-              />
-              <button
-                onClick={handleSend}
-                className="bg-teal-deep text-white border-none rounded-[10px] px-5 text-[13px] cursor-pointer disabled:opacity-50"
-                disabled={thinking}
-              >
-                질문하기
-              </button>
-            </div>
-          </div>
-
-          {/* 실시간 브리핑 패널 — TODO: 날씨/혼잡도/경비 실시간 API 연동 지점 */}
-          <div className="w-[290px] shrink-0 flex flex-col gap-3 overflow-y-auto">
-            {/* 날씨 */}
-            <div className="rounded-2xl p-4 text-paper bg-gradient-to-br from-teal to-teal-deep shadow-sm">
-              <div className="flex items-start justify-between">
-                <div>
-                  <div className="text-[11px] opacity-80">순천 · 오늘</div>
-                  <div className="text-[32px] font-display font-semibold leading-none mt-1.5">
-                    18°C
+            )}
+            <div className="text-[11px] font-semibold text-muted px-2">이전 대화 · {conversations.length}개</div>
+            {ordered.length ? (
+              <div className="flex lg:flex-col gap-1 overflow-x-auto lg:overflow-y-auto lg:min-h-0">
+                {ordered.map((conversation) => (
+                  <div key={conversation.id} className={`min-w-[150px] lg:min-w-0 rounded-xl flex items-center gap-1 ${selectedId === conversation.id ? 'bg-paper' : 'hover:bg-paper'}`}>
+                    <button type="button" onClick={() => { setSelectedId(conversation.id); setInput(''); }}
+                      className="min-w-0 flex-1 bg-transparent border-none text-left px-3 py-2.5 cursor-pointer">
+                      <span className="block truncate text-sm font-semibold text-teal-deep">{conversation.title}</span>
+                      <span className="block truncate mt-1 text-[11px] text-muted">{conversation.messages.at(-1)?.text ?? '아직 대화가 없어요'}</span>
+                    </button>
+                    <button type="button" onClick={() => deleteConversation(conversation.id)} aria-label={`${conversation.title} 삭제`}
+                      className="shrink-0 mr-2 text-muted hover:text-pin bg-transparent border-none cursor-pointer">✕</button>
                   </div>
-                  <div className="text-[12.5px] mt-2">맑음 · 체감 17°</div>
-                </div>
-                <div className="text-[40px] leading-none">🌤</div>
+                ))}
               </div>
-            </div>
+            ) : <p className="m-0 px-2 text-xs text-muted">새 지역 대화를 만들어 시작하세요.</p>}
+            <p className="mt-auto m-0 px-2 text-[11px] leading-relaxed text-muted">대화 기록은 현재 이 브라우저에 저장됩니다.</p>
+          </aside>
 
-            {/* 혼잡도 + 경비 */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-2xl border border-line bg-white p-3.5">
-                <div className="text-[10px] text-[#8B8272] uppercase tracking-wide">정원 혼잡도</div>
-                <div className="mt-2 flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-teal" />
-                  <span className="text-[18px] font-display font-semibold text-teal-deep leading-none">
-                    여유
-                  </span>
+          <main className="min-w-0 flex-1 min-h-[360px] lg:min-h-0 bg-white border border-line rounded-2xl flex flex-col overflow-hidden">
+            {active ? (
+              <>
+                <div className="shrink-0 border-b border-line px-5 py-4 bg-paper">
+                  <h1 className="m-0 font-display text-[18px] font-semibold text-ink">{active.title}</h1>
+                  <p className="m-0 mt-1 text-xs text-muted">지역: {active.region} · AI 답변 기능은 서버 연결 전입니다</p>
                 </div>
-                <div className="text-[10px] text-[#8B8272] mt-1.5">지금 방문 추천</div>
-              </div>
-              <div className="rounded-2xl border border-line bg-white p-3.5">
-                <div className="text-[10px] text-[#8B8272] uppercase tracking-wide">AI 산출 경비</div>
-                <div className="mt-2 text-[17px] font-display font-semibold text-ink leading-none">
-                  ₩180,000
-                </div>
-                <div className="text-[10px] text-[#8B8272] mt-1.5">2박 3일 · 1인</div>
-              </div>
-            </div>
-
-            {/* 저장 장소 */}
-            <div className="rounded-2xl border border-line bg-white p-4">
-              <div className="flex items-center justify-between mb-2.5">
-                <h4 className="m-0 text-[12px] font-semibold text-ink">AI 반영 저장 장소</h4>
-                <span className="text-[11px] font-semibold text-teal-deep bg-sand rounded-full px-2 py-0.5">
-                  {savedPlaces.length}곳
-                </span>
-              </div>
-              {savedPlaces.length === 0 ? (
-                <p className="m-0 text-[11.5px] text-[#8B8272] leading-relaxed">
-                  지도에서 장소를 저장하면 여기에 표시되고 코스 추천에 반영돼요.
-                </p>
-              ) : (
-                <div className="flex flex-col gap-1.5">
-                  {savedPlaces.map((p) => (
-                    <div key={p.id} className="flex items-center gap-2 text-[12.5px]">
-                      <span className="w-6 h-6 rounded-md bg-paper flex items-center justify-center text-[13px] shrink-0">
-                        {p.icon}
-                      </span>
-                      <span className="truncate">{p.name}</span>
+                <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-5 sm:px-6 flex flex-col gap-4">
+                  <div className="self-start max-w-[85%] rounded-2xl rounded-bl-sm bg-paper border border-line px-4 py-3 text-sm leading-relaxed text-ink-soft">
+                    {active.region} 여행에 관해 궁금한 점을 적어두세요. 현재 질문은 이 브라우저에 저장되며, AI 답변은 연결 후 이용할 수 있습니다.
+                  </div>
+                  {active.messages.map((message) => (
+                    <div key={message.id} className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words ${message.sender === 'user' ? 'self-end rounded-br-sm bg-teal-deep text-white' : 'self-start rounded-bl-sm bg-paper border border-line text-ink-soft'}`}>
+                      {message.text}
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
-
-            {/* 학습 취향 */}
-            <div className="rounded-2xl border border-line bg-white p-4">
-              <h4 className="m-0 mb-2.5 text-[12px] font-semibold text-ink">분석된 학습 취향</h4>
-              <div className="flex flex-wrap gap-1.5">
-                {['조용한 골목', '감성 카페', '도보 선호', '자연 코스'].map((t) => (
-                  <span
-                    key={t}
-                    className="text-[11px] bg-sand text-teal-deep rounded-full px-2.5 py-1"
-                  >
-                    #{t}
-                  </span>
-                ))}
+                <div className="shrink-0 border-t border-line p-3 sm:p-4 bg-white">
+                  <div className="flex items-end gap-2">
+                    <textarea value={input} maxLength={2000} rows={2}
+                      onChange={(event) => setInput(event.target.value)}
+                      onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }}
+                      placeholder={`${active.region} 여행에 대한 질문을 적어보세요`}
+                      className="min-w-0 flex-1 resize-none rounded-xl border border-line px-3.5 py-2.5 text-sm leading-relaxed outline-teal" />
+                    <button type="button" onClick={sendMessage} disabled={!input.trim()}
+                      className="shrink-0 rounded-xl bg-teal-deep text-white px-4 py-3 text-sm font-semibold cursor-pointer border-none disabled:opacity-50">저장</button>
+                  </div>
+                  <p className="m-0 mt-2 text-[11px] text-muted">Enter로 저장 · Shift+Enter로 줄바꿈 · 실제 AI 응답은 아직 제공되지 않습니다.</p>
+                  {storageError && <p role="alert" className="m-0 mt-2 text-xs text-pin">{storageError}</p>}
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center text-center p-6 gap-3">
+                <span className="text-4xl" aria-hidden="true">🧭</span>
+                <h1 className="m-0 font-display text-xl text-ink">어디로 떠나고 싶으세요?</h1>
+                <p className="m-0 text-sm text-muted">왼쪽에서 지역별 대화를 만들면 여행 기록과 정보를 한곳에서 볼 수 있어요.</p>
+                <button type="button" onClick={() => setShowNewForm(true)} className="rounded-xl bg-teal-deep text-white px-4 py-2.5 text-sm cursor-pointer border-none">새 지역 대화 만들기</button>
               </div>
-            </div>
-          </div>
+            )}
+          </main>
+
+          {active && (
+            <aside className="w-full lg:w-[230px] xl:w-[250px] shrink-0 flex flex-col gap-3 lg:max-h-full lg:overflow-y-auto">
+              <div className="rounded-2xl bg-teal-deep text-paper p-4">
+                <div className="text-xs opacity-80">{active.region} · 현재 날씨</div>
+                {weather.status === 'loading' && <p className="m-0 mt-3 text-sm">날씨를 불러오는 중…</p>}
+                {weather.status === 'success' && (
+                  <>
+                    <div className="mt-3 font-display text-[30px] font-semibold">{Math.round(weather.value.temperature)}°C</div>
+                    <div className="text-sm">{weather.value.condition}</div>
+                    <div className="mt-2 text-[11px] opacity-80">{weather.value.location} · Open-Meteo</div>
+                  </>
+                )}
+                {weather.status === 'error' && <p className="m-0 mt-3 text-xs leading-relaxed">{weather.message}</p>}
+              </div>
+              <div className="rounded-2xl bg-white border border-line p-4">
+                <h2 className="m-0 text-sm font-semibold text-ink">유명 관광지 혼잡도</h2>
+                <p className="m-0 mt-2 text-xs leading-relaxed text-muted">{active.region} 관광지별 실시간 혼잡도 데이터는 아직 연결되지 않았어요.</p>
+              </div>
+              <div className="rounded-2xl bg-white border border-line p-4">
+                <h2 className="m-0 text-sm font-semibold text-ink">숙소 평균 금액</h2>
+                <p className="m-0 mt-2 text-xs leading-relaxed text-muted">{active.region} 숙소 가격은 추후 숙박 데이터 API를 연결한 뒤 표시됩니다.</p>
+              </div>
+              <button type="button" onClick={() => navigate('/map')} className="rounded-xl border border-line bg-white px-4 py-3 text-sm text-teal-deep font-semibold cursor-pointer">지도에서 장소 저장하기 →</button>
+            </aside>
+          )}
         </div>
       </div>
     </>

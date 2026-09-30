@@ -1,197 +1,125 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Topbar from '../components/Topbar';
-import { diaryEntries } from '../data/mockData';
 import { useTrip } from '../context/TripContext';
+import type { SavedBoard } from '../types';
+
+function BoardArchiveCard({
+  board,
+  onEdit,
+  onDelete,
+  onShare,
+}: {
+  board: SavedBoard;
+  onEdit: (id: string) => void;
+  onDelete: (id: string) => void;
+  onShare: (board: SavedBoard) => void;
+}) {
+  return (
+    <article className="bg-white border border-line rounded-2xl p-5 shadow-card flex flex-col gap-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="m-0 font-display text-[18px] font-semibold text-teal-deep break-words">{board.title}</h2>
+          <p className="m-0 mt-1 text-xs text-muted">
+            {new Date(board.updatedAt).toLocaleDateString('ko-KR')} 수정 · 카드 {board.cards.length}개 · 동선 {board.connections.length}개
+          </p>
+        </div>
+        <span className="shrink-0 text-[11px] text-teal-deep bg-paper rounded-full px-2.5 py-1">일정판</span>
+      </div>
+
+      <div className="min-h-[95px] border border-dashed border-line rounded-xl bg-paper p-3 flex flex-wrap content-start gap-2">
+        {board.cards.length ? board.cards.slice(0, 5).map((card) => (
+          <span key={card.id} className="max-w-full truncate bg-white border border-line rounded-lg px-2.5 py-1.5 text-xs text-ink-soft">
+            {card.icon ?? '📍'} {card.title}
+          </span>
+        )) : <span className="text-xs text-muted">아직 카드가 없는 일정판</span>}
+        {board.cards.length > 5 && <span className="text-xs text-muted self-center">외 {board.cards.length - 5}개</span>}
+      </div>
+
+      <div className="flex flex-wrap gap-2 border-t border-line pt-4">
+        <button type="button" onClick={() => onEdit(board.id)} className="px-3.5 py-2 rounded-lg bg-teal-deep text-white text-xs font-semibold cursor-pointer border-none">
+          화이트보드에서 수정
+        </button>
+        <button type="button" onClick={() => onShare(board)} className="px-3.5 py-2 rounded-lg bg-paper text-teal-deep text-xs font-semibold cursor-pointer border border-line">
+          공유
+        </button>
+        <button type="button" onClick={() => onDelete(board.id)} className="ml-auto px-3.5 py-2 rounded-lg bg-white text-pin text-xs cursor-pointer border border-line">
+          삭제
+        </button>
+      </div>
+    </article>
+  );
+}
 
 export default function DiaryPage() {
-  const { diaryFolders, addDiaryFolder, renameDiaryFolder, removeDiaryFolder } = useTrip();
+  const navigate = useNavigate();
+  const { savedBoards, activeBoardId, hasUnsavedBoardChanges, openBoard, createBoard, deleteBoard } = useTrip();
+  const [sharingBoard, setSharingBoard] = useState<SavedBoard | null>(null);
+  const orderedBoards = [...savedBoards].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
-  const [selectedFolder, setActiveFolder] = useState(diaryFolders[0]?.id ?? '');
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState('');
-  const [adding, setAdding] = useState(false);
-  const [newName, setNewName] = useState('');
-
-  // 선택한 폴더가 삭제됐으면 첫 폴더로 (렌더 중 계산)
-  const activeFolder = diaryFolders.some((f) => f.id === selectedFolder)
-    ? selectedFolder
-    : diaryFolders[0]?.id ?? '';
-
-  const visibleEntries = diaryEntries.filter((e) => e.folderId === activeFolder);
-
-  const startRename = (id: string, name: string) => {
-    setEditingId(id);
-    setDraft(name);
+  const editBoard = (id: string) => {
+    if (id !== activeBoardId && hasUnsavedBoardChanges && !window.confirm('저장하지 않은 일정판 변경사항이 있습니다. 다른 일정판을 열까요?')) return;
+    if (openBoard(id)) navigate('/board');
   };
-  const commitRename = () => {
-    if (editingId) renameDiaryFolder(editingId, draft);
-    setEditingId(null);
+  const removeBoard = (id: string) => {
+    const board = savedBoards.find((item) => item.id === id);
+    if (board && window.confirm(`'${board.title}' 일정판을 삭제할까요? 카드와 동선도 함께 삭제됩니다.`)) {
+      try { deleteBoard(id); }
+      catch { window.alert('일정판을 삭제하지 못했습니다. 브라우저 저장 공간을 확인해주세요.'); }
+    }
   };
-  const commitAdd = () => {
-    if (newName.trim()) addDiaryFolder(newName);
-    setNewName('');
-    setAdding(false);
-  };
-  const handleDelete = (id: string, name: string) => {
-    if (diaryFolders.length <= 1) return;
-    if (window.confirm(`'${name}' 폴더를 삭제할까요?`)) removeDiaryFolder(id);
+  const startBoard = () => {
+    if (hasUnsavedBoardChanges && !window.confirm('저장하지 않은 일정판 변경사항이 있습니다. 새 일정판을 만들까요?')) return;
+    createBoard();
+    navigate('/board');
   };
 
   return (
     <>
-      <Topbar
-        title="나의 여행 다이어리 기록함"
-        stamp={`폴더 ${diaryFolders.length}개 · 이 폴더 기록 ${visibleEntries.length}개`}
-      />
+      <Topbar title="여행 일정 기록함" stamp={`저장한 일정판 ${savedBoards.length}개`} />
       <div className="flex-1 overflow-y-auto p-8">
-        <div className="flex gap-6 h-[calc(100vh-220px)]">
-          {/* 폴더 목록 */}
-          <div className="w-64 bg-white border border-line rounded-2xl p-4 shrink-0 flex flex-col gap-1.5">
-            <div className="flex items-center justify-between mb-1 px-1">
-              <span className="text-xs tracking-wider uppercase text-[#8B8272] font-semibold">
-                여행 로그 폴더
-              </span>
-              <button
-                onClick={() => {
-                  setAdding(true);
-                  setNewName('');
-                }}
-                className="text-teal-deep text-sm leading-none w-6 h-6 rounded-md hover:bg-paper cursor-pointer border-none bg-transparent"
-                aria-label="폴더 추가"
-              >
-                ＋
-              </button>
+        <div className="max-w-[1080px] mx-auto">
+          <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
+            <div>
+              <h1 className="m-0 font-display text-[24px] font-semibold text-ink">내 일정판</h1>
+              <p className="m-0 mt-2 text-sm text-muted">화이트보드에서 저장한 여행 동선을 다시 열어 수정할 수 있어요.</p>
             </div>
-
-            {diaryFolders.map((folder) => {
-              const active = activeFolder === folder.id;
-              if (editingId === folder.id) {
-                return (
-                  <input
-                    key={folder.id}
-                    autoFocus
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    onBlur={commitRename}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') commitRename();
-                      if (e.key === 'Escape') setEditingId(null);
-                    }}
-                    className="px-3 py-2.5 rounded-[10px] text-sm border border-teal outline-none"
-                  />
-                );
-              }
-              return (
-                <div
-                  key={folder.id}
-                  className={`group/folder flex items-center gap-2 px-3 py-2.5 rounded-[10px] cursor-pointer text-sm transition-colors ${
-                    active
-                      ? 'bg-paper text-teal-deep font-semibold'
-                      : 'text-[#555] hover:bg-paper hover:text-teal-deep'
-                  }`}
-                  onClick={() => setActiveFolder(folder.id)}
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    className="w-[18px] h-[18px] shrink-0 fill-sand stroke-teal"
-                    strokeWidth={1.5}
-                  >
-                    <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                  </svg>
-                  <span className="flex-1 min-w-0 truncate">{folder.name}</span>
-                  <span className="flex gap-0.5 shrink-0">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        startRename(folder.id, folder.name);
-                      }}
-                      className="w-6 h-6 rounded-md text-[12px] text-[#B7AE97] hover:text-teal hover:bg-white cursor-pointer bg-transparent border-none transition-colors"
-                      aria-label="폴더 이름 변경"
-                    >
-                      ✎
-                    </button>
-                    {diaryFolders.length > 1 && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDelete(folder.id, folder.name);
-                        }}
-                        className="w-6 h-6 rounded-md text-[12px] text-[#B7AE97] hover:text-pin hover:bg-white cursor-pointer bg-transparent border-none transition-colors"
-                        aria-label="폴더 삭제"
-                      >
-                        🗑
-                      </button>
-                    )}
-                  </span>
-                </div>
-              );
-            })}
-
-            {adding && (
-              <input
-                autoFocus
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onBlur={commitAdd}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') commitAdd();
-                  if (e.key === 'Escape') setAdding(false);
-                }}
-                placeholder="새 폴더 이름"
-                className="px-3 py-2.5 rounded-[10px] text-sm border border-teal outline-none"
-              />
-            )}
+            <button type="button" onClick={startBoard} className="px-4 py-2.5 rounded-xl bg-teal-deep text-white text-sm font-semibold cursor-pointer border-none">
+              ＋ 새 일정판
+            </button>
           </div>
 
-          {/* 다이어리 카드 피드 */}
-          <div className="flex-1 overflow-y-auto">
-            {visibleEntries.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-center text-[#8B8272] gap-2">
-                <span className="text-3xl">🗂️</span>
-                <p className="m-0 text-sm">이 폴더에는 아직 기록이 없어요.</p>
-                <p className="m-0 text-[12px]">여행을 다녀오면 여기에 다이어리가 쌓여요.</p>
-              </div>
-            ) : (
-            <div className="grid grid-cols-3 gap-4.5">
-              {visibleEntries.map((entry) => (
-                <div
-                  key={entry.id}
-                  className="bg-white border border-line rounded-2xl overflow-hidden flex flex-col"
-                >
-                  <div className="px-4 py-3 border-b border-[#EFE9DA] flex justify-between items-center bg-[#faf8f5]">
-                    <span className="text-[11px] font-mono font-semibold text-pin">
-                      {entry.dayLabel}
-                    </span>
-                    <div className="text-xs text-[#FFB800]">
-                      {'★'.repeat(Math.round(entry.rating))} {entry.rating.toFixed(1)}
-                    </div>
-                  </div>
-                  <div
-                    className="h-[140px] bg-[#EAE3D2] bg-cover bg-center"
-                    style={{ backgroundImage: `url('${entry.imageUrl}')` }}
-                  />
-                  <div className="p-4 flex-1 flex flex-col gap-1.5">
-                    <h4 className="m-0 text-[15px] text-teal-deep">{entry.title}</h4>
-                    <p className="m-0 text-[12.5px] leading-relaxed text-[#4A5560]">{entry.content}</p>
-                  </div>
-                  <div className="px-4 py-3 border-t border-dashed border-line flex justify-between text-xs text-[#8B8272]">
-                    <span>💬 댓글 {entry.comments}</span>
-                    <div className="flex gap-3">
-                      <span className="flex items-center gap-1 cursor-pointer hover:text-teal">
-                        ❤️ {entry.likes}
-                      </span>
-                      <span className="flex items-center gap-1 cursor-pointer hover:text-teal">
-                        🔗 공유
-                      </span>
-                    </div>
-                  </div>
-                </div>
+          {orderedBoards.length ? (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              {orderedBoards.map((board) => (
+                <BoardArchiveCard key={board.id} board={board} onEdit={editBoard} onDelete={removeBoard} onShare={setSharingBoard} />
               ))}
             </div>
-            )}
-          </div>
+          ) : (
+            <div className="min-h-[320px] bg-white border border-dashed border-line rounded-2xl flex flex-col items-center justify-center text-center gap-3 p-6">
+              <span className="text-4xl" aria-hidden="true">🗺️</span>
+              <p className="m-0 text-[16px] font-semibold text-ink">아직 저장한 일정판이 없어요.</p>
+              <p className="m-0 text-sm text-muted">장소와 메모, 사진 카드를 배치하고 동선을 연결해 보세요.</p>
+              <button type="button" onClick={startBoard} className="mt-2 px-4 py-2.5 rounded-xl bg-teal text-white text-sm font-semibold cursor-pointer border-none">일정판 만들기</button>
+            </div>
+          )}
+          <p className="mt-5 text-xs text-muted">현재 일정판은 이 브라우저에 저장됩니다. 공동 편집 링크는 서버 연동 후 제공됩니다.</p>
         </div>
       </div>
+
+      {sharingBoard && (
+        <div className="fixed inset-0 z-[2000] bg-black/40 flex items-center justify-center p-4" onClick={() => setSharingBoard(null)}>
+          <div className="bg-white rounded-2xl w-full max-w-[420px] p-6 shadow-2xl" role="dialog" aria-modal="true" aria-label="일정판 공유" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3">
+              <h2 className="m-0 font-display text-lg font-semibold text-teal-deep">{sharingBoard.title} 공유</h2>
+              <button type="button" onClick={() => setSharingBoard(null)} aria-label="닫기" className="text-muted bg-transparent border-none cursor-pointer">✕</button>
+            </div>
+            <p className="text-sm text-ink-soft leading-relaxed mt-4 mb-2">친구와 같은 일정판을 편집하는 기능은 서버 저장과 참여자 권한 설정이 연결된 뒤 사용할 수 있어요.</p>
+            <p className="text-xs text-muted m-0">지금은 내 브라우저에만 저장되어 있어 링크를 보내도 친구가 이 일정판을 볼 수 없습니다.</p>
+            <button type="button" onClick={() => setSharingBoard(null)} className="mt-5 w-full py-2.5 rounded-lg bg-teal-deep text-white text-sm cursor-pointer border-none">확인</button>
+          </div>
+        </div>
+      )}
     </>
   );
 }

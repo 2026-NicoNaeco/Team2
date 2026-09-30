@@ -1,16 +1,9 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Topbar from '../components/Topbar';
 import { useTrip } from '../context/TripContext';
 
-const CARD_WIDTH = 210;
-
-// 공동 편집 참여자 (Firebase Realtime DB 연동 예정 — 지금은 데모용 목데이터)
-const COLLABORATORS = [
-  { name: '수진', status: '편집 중', color: '#2F6F6B', dot: true },
-  { name: '민준', status: '메모 추가 완료 · 1분 전', color: '#C77D30', dot: false },
-  { name: '하은', status: '사진 업로드 완료 · 3분 전', color: '#D64545', dot: false },
-];
+const CARD_WIDTH = 220;
 
 // 업로드한 사진을 localStorage에 담을 수 있게 축소 + JPEG 변환
 function downscaleImage(file: File, maxSize = 900, quality = 0.82): Promise<string> {
@@ -26,7 +19,7 @@ function downscaleImage(file: File, maxSize = 900, quality = 0.82): Promise<stri
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext('2d');
-        if (!ctx) return resolve(reader.result as string);
+        if (!ctx) return reject(new Error('사진을 변환하지 못했습니다.'));
         ctx.fillStyle = '#fff';
         ctx.fillRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);
@@ -52,45 +45,63 @@ export default function BoardPage() {
     addConnection,
     removeConnection,
     activityLog,
+    places,
+    savedIds,
+    memos,
+    addBoardCard,
+    savedBoards,
+    activeBoardId,
+    saveBoard,
+    createBoard,
   } = useTrip();
+
+  const activeBoard = savedBoards.find((board) => board.id === activeBoardId);
+  const [boardTitle, setBoardTitle] = useState(activeBoard?.title ?? '새 여행 일정');
+  const [saveMessage, setSaveMessage] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [uploadError, setUploadError] = useState('');
+  const [showPlaces, setShowPlaces] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const savedPlaces = places.filter((place) => savedIds.includes(place.id));
+  const hasUnsavedChanges = activeBoard
+    ? boardTitle.trim() !== activeBoard.title ||
+      JSON.stringify(cards) !== JSON.stringify(activeBoard.cards) ||
+      JSON.stringify(connections) !== JSON.stringify(activeBoard.connections)
+    : cards.length > 0 || connections.length > 0;
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [connectMode, setConnectMode] = useState(false);
   const [linkFrom, setLinkFrom] = useState<string | null>(null);
-  const [showPanel, setShowPanel] = useState(true);
+  const [showPanel, setShowPanel] = useState(false);
   const [editing, setEditing] = useState<{ id: string; field: 'title' | 'description' } | null>(null);
+  const canvasWidth = Math.max(1200, ...cards.map((card) => card.left + CARD_WIDTH + 80));
+  const canvasHeight = Math.max(780, ...cards.map((card) => card.top + 270));
 
-  // ── 친구 초대 (공유) — TODO: 백엔드 연동 시 실제 공유 링크/초대 메일로 교체 ──
-  const [showInvite, setShowInvite] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState('');
-  const [invites, setInvites] = useState<{ email: string; role: '편집 가능' | '보기 전용' }[]>([]);
-  const [linkCopied, setLinkCopied] = useState(false);
-  const [inviteRole, setInviteRole] = useState<'편집 가능' | '보기 전용'>('편집 가능');
-  const [shareToken] = useState(() => crypto.randomUUID().slice(0, 8));
-  const shareLink = `${window.location.origin}/board?invite=${shareToken}`;
+  useEffect(() => {
+    if (!isExpanded) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsExpanded(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isExpanded]);
 
-  const shareInputRef = useRef<HTMLInputElement>(null);
-  const copyShareLink = async () => {
+  const saveCurrentBoard = () => {
     try {
-      await navigator.clipboard.writeText(shareLink);
-    } catch {
-      // 클립보드 API가 막힌 환경 — 링크를 선택 상태로 만들어 수동 복사(Ctrl+C) 유도
-      shareInputRef.current?.select();
-      try {
-        document.execCommand('copy');
-      } catch {
-        /* 무시 */
-      }
+      saveBoard(boardTitle);
+      setSaveError('');
+      setSaveMessage('일정판을 기록함에 저장했어요.');
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : '일정판을 저장하지 못했습니다.');
     }
-    setLinkCopied(true);
-    setTimeout(() => setLinkCopied(false), 1800);
   };
 
-  const sendInvite = () => {
-    const email = inviteEmail.trim();
-    if (!/^\S+@\S+\.\S+$/.test(email)) return;
-    setInvites((prev) => (prev.some((i) => i.email === email) ? prev : [...prev, { email, role: inviteRole }]));
-    setInviteEmail('');
+  const startNewBoard = () => {
+    if (hasUnsavedChanges && !window.confirm('새 일정판을 만들까요? 저장하지 않은 변경사항은 사라집니다.')) return;
+    createBoard();
+    setBoardTitle('새 여행 일정');
+    setSaveMessage('');
+    setSaveError('');
   };
 
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -110,10 +121,16 @@ export default function BoardPage() {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024) {
+      setUploadError('사진은 JPG·PNG·WebP 형식의 5MB 이하 파일만 사용할 수 있어요.');
+      return;
+    }
+    setUploadError('');
     let dataUrl: string;
     try {
       dataUrl = await downscaleImage(file);
     } catch {
+      setUploadError('사진을 읽지 못했습니다. 다른 파일을 선택해주세요.');
       return;
     }
     if (photoTargetRef.current) {
@@ -148,7 +165,11 @@ export default function BoardPage() {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const { id, offsetX, offsetY } = dragState.current;
-    moveBoardCard(id, e.clientY - rect.top - offsetY, e.clientX - rect.left - offsetX);
+    moveBoardCard(
+      id,
+      Math.max(0, Math.min(4800, e.clientY - rect.top - offsetY)),
+      Math.max(0, Math.min(4800, e.clientX - rect.left - offsetX))
+    );
   };
 
   const handlePointerUp = () => {
@@ -189,7 +210,7 @@ export default function BoardPage() {
 
   return (
     <>
-      <Topbar title="여행 다이어리 · 일정판" stamp={connectMode ? '선 연결 모드' : '드래그 앤 편집 모드'} />
+      <Topbar title="여행 동선 · 일정판" stamp={connectMode ? '선 연결 모드' : '드래그 앤 편집 모드'} />
       <input
         ref={fileInputRef}
         type="file"
@@ -197,14 +218,37 @@ export default function BoardPage() {
         onChange={handleFileChange}
         className="hidden"
       />
-      <div className="flex-1 overflow-y-auto p-8">
+      <div className={isExpanded
+        ? 'fixed inset-0 z-[1000] overflow-y-auto bg-paper p-4 md:p-6 print:static print:p-0'
+        : 'flex-1 overflow-y-auto p-4 md:p-8'}>
+        {isExpanded && <h1 className="m-0 mb-4 font-display text-xl font-bold text-ink print:hidden">여행 동선 · 일정판</h1>}
+        <div className="flex flex-wrap items-center gap-3 mb-4 print:hidden">
+          <input
+            aria-label="일정판 이름"
+            value={boardTitle}
+            maxLength={80}
+            onChange={(event) => { setBoardTitle(event.target.value); setSaveMessage(''); setSaveError(''); }}
+            className="min-w-[220px] flex-1 max-w-[420px] rounded-xl border border-line bg-white px-4 py-2.5 font-display text-[16px] font-semibold text-ink outline-teal"
+          />
+          <button type="button" onClick={saveCurrentBoard} disabled={!boardTitle.trim()}
+            className="rounded-xl bg-teal-deep text-white px-4 py-2.5 text-sm font-semibold cursor-pointer border-none disabled:opacity-50">
+            기록함에 저장
+          </button>
+          <button type="button" onClick={startNewBoard} className="rounded-xl border border-line bg-white text-teal-deep px-4 py-2.5 text-sm cursor-pointer">새 일정판</button>
+          <button type="button" onClick={() => navigate('/diary')} className="rounded-xl border border-line bg-white text-teal-deep px-4 py-2.5 text-sm cursor-pointer">기록함 보기</button>
+          <span role="status" className="text-xs text-teal-deep">
+            {hasUnsavedChanges ? '저장되지 않은 변경사항' : saveMessage}
+          </span>
+          {saveError && <span role="alert" className="text-xs text-pin">{saveError}</span>}
+          {uploadError && <span role="alert" className="text-xs text-pin">{uploadError}</span>}
+        </div>
         <div className="flex justify-between items-center mb-4 gap-3 flex-wrap print:hidden">
           <div className="flex gap-2 flex-wrap">
             <button
-              onClick={() => addBlankBoardCard({ icon: '📍', title: '새 장소', description: '' })}
+              onClick={() => setShowPlaces((value) => !value)}
               className={toolBtn}
             >
-              📍 장소 추가
+              📍 저장한 장소 불러오기
             </button>
             <button
               onClick={() =>
@@ -227,7 +271,11 @@ export default function BoardPage() {
               onClick={() => setShowPanel((v) => !v)}
               className={`${toolBtn} ${showPanel ? 'bg-paper' : ''}`}
             >
-              👥 공동 편집
+              {showPanel ? '카드 목록 닫기' : '카드 목록 보기'}
+            </button>
+            <button type="button" onClick={() => setIsExpanded((value) => !value)} aria-pressed={isExpanded}
+              className={toolBtn}>
+              {isExpanded ? '↙ 기본 화면' : '⛶ 화면 크게'}
             </button>
           </div>
           {/* PDF 저장: 브라우저 인쇄 대화상자에서 "PDF로 저장" 선택 */}
@@ -239,23 +287,54 @@ export default function BoardPage() {
           </button>
         </div>
 
+        {showPlaces && (
+          <div className="mb-4 rounded-2xl border border-line bg-white p-4 print:hidden">
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <h2 className="m-0 text-sm font-semibold text-teal-deep">지도에 저장한 장소</h2>
+              <button type="button" onClick={() => navigate('/map')} className="text-xs text-teal bg-transparent border-none cursor-pointer">지도에서 장소 찾기 →</button>
+            </div>
+            {savedPlaces.length ? (
+              <div className="flex flex-wrap gap-2">
+                {savedPlaces.map((place) => {
+                  const added = cards.some((card) => card.placeId === place.id);
+                  return (
+                    <button key={place.id} type="button" disabled={added}
+                      onClick={() => addBoardCard({
+                        day: '저장한 장소', icon: place.icon, title: place.name,
+                        description: memos[place.id] || place.description, placeId: place.id,
+                      })}
+                      className="rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink-soft cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                      {place.icon} {place.name} {added ? '✓ 추가됨' : '＋ 카드로 추가'}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : <p className="m-0 text-xs text-muted">아직 저장한 장소가 없어요. 지도에서 장소를 저장해 주세요.</p>}
+          </div>
+        )}
+
         <p className="text-xs text-[#8B8272] mb-2 print:hidden">
           {connectMode
             ? '카드를 두 개 클릭하면 동선이 이어져요. 선을 클릭하면 삭제됩니다.'
             : '카드를 드래그해 옮기고, 제목·메모를 더블클릭하면 수정돼요. 빈 공간 더블클릭 시 새 카드가 추가됩니다.'}
         </p>
 
-        <div className="flex gap-5">
+        <div className="flex flex-col xl:flex-row gap-5">
           {/* 캔버스 */}
-          <div className="flex-1 h-[calc(100vh-290px)] bg-white border border-line rounded-2xl overflow-auto print:h-auto print:overflow-visible print:border-0">
+          <div className={`min-w-0 flex-1 bg-white border border-line rounded-2xl overflow-auto print:h-auto print:overflow-visible print:border-0 ${
+            isExpanded ? 'h-[calc(100dvh-240px)] min-h-[520px]' : 'h-[calc(100dvh-220px)] min-h-[640px]'
+          }`}>
             <div
               id="board-canvas"
               ref={canvasRef}
               onPointerMove={handlePointerMove}
               onPointerUp={handlePointerUp}
+              onPointerCancel={handlePointerUp}
               onDoubleClick={handleCanvasDoubleClick}
-              className="relative w-[980px] h-[620px]"
+              className="relative min-w-full min-h-full"
               style={{
+                width: canvasWidth,
+                height: canvasHeight,
                 backgroundImage: 'radial-gradient(var(--color-line) 1px, transparent 1px)',
                 backgroundSize: '22px 22px',
               }}
@@ -338,8 +417,8 @@ export default function BoardPage() {
                       ✕
                     </button>
 
-                    <div className="px-3.5 pt-3 pb-2 flex items-center gap-2">
-                      {card.icon && <span className="text-[15px]">{card.icon}</span>}
+                    <div className="px-3 pt-3 pb-2 flex items-center gap-2">
+                      {card.icon && <span className="text-base">{card.icon}</span>}
                       {editing?.id === card.id && editing.field === 'title' ? (
                         <input
                           autoFocus
@@ -348,14 +427,14 @@ export default function BoardPage() {
                           onClick={(e) => e.stopPropagation()}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') e.currentTarget.blur();
-                            if (e.key === 'Escape') setEditing(null);
+                            if (e.key === 'Escape') { e.currentTarget.value = card.title; e.currentTarget.blur(); }
                           }}
                           onBlur={(e) => {
                             const v = e.target.value.trim();
                             if (v) updateBoardCard(card.id, { title: v });
                             setEditing(null);
                           }}
-                          className="m-0 flex-1 min-w-0 text-[13.5px] font-semibold text-teal-deep border-b border-teal bg-transparent outline-none"
+                          className="m-0 flex-1 min-w-0 text-sm font-semibold text-teal-deep border-b border-teal bg-transparent outline-none"
                         />
                       ) : (
                         <h5
@@ -365,15 +444,20 @@ export default function BoardPage() {
                             setEditing({ id: card.id, field: 'title' });
                           }}
                           title="더블클릭해서 수정"
-                          className="m-0 text-[13.5px] text-teal-deep leading-tight flex-1 min-w-0 truncate"
+                          className="m-0 text-sm text-teal-deep leading-tight flex-1 min-w-0 truncate"
                         >
                           {card.title}
                         </h5>
                       )}
+                      {!connectMode && <button type="button" onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => { e.stopPropagation(); setEditing({ id: card.id, field: 'title' }); }}
+                        className="shrink-0 bg-transparent border-none text-xs text-teal cursor-pointer" aria-label={`${card.title} 제목 수정`}>
+                        수정
+                      </button>}
                     </div>
 
                     {(card.day || card.time) && (
-                      <div className="px-3.5 -mt-1 mb-1.5 flex items-center gap-1.5 text-[10.5px] text-pin font-mono font-semibold">
+                      <div className="px-3 -mt-1 mb-2 flex items-center gap-1.5 text-[11px] text-pin font-mono font-semibold">
                         {card.day && <span>{card.day}</span>}
                         {card.time && <span>⏱ {card.time}</span>}
                       </div>
@@ -381,7 +465,7 @@ export default function BoardPage() {
 
                     {card.imageUrl ? (
                       <div
-                        className="relative h-[86px] bg-sand bg-cover bg-center"
+                        className="relative h-[90px] bg-sand bg-cover bg-center"
                         style={{ backgroundImage: `url('${card.imageUrl}')` }}
                       >
                         <button
@@ -413,7 +497,7 @@ export default function BoardPage() {
                           e.stopPropagation();
                           openPhotoPicker(card.id);
                         }}
-                        className="mx-3.5 mb-1.5 w-[calc(100%-28px)] border border-dashed border-line rounded-lg py-1.5 text-[10.5px] text-[#8B8272] cursor-pointer hover:border-teal hover:text-teal transition-colors"
+                        className="mx-3 mb-2 w-[calc(100%-24px)] border border-dashed border-line rounded-lg py-1.5 text-[11px] text-[#8B8272] cursor-pointer hover:border-teal hover:text-teal transition-colors"
                       >
                         ＋ 사진 추가
                       </button>
@@ -426,13 +510,13 @@ export default function BoardPage() {
                         onPointerDown={(e) => e.stopPropagation()}
                         onClick={(e) => e.stopPropagation()}
                         onKeyDown={(e) => {
-                          if (e.key === 'Escape') setEditing(null);
+                          if (e.key === 'Escape') { e.currentTarget.value = card.description; e.currentTarget.blur(); }
                         }}
                         onBlur={(e) => {
                           updateBoardCard(card.id, { description: e.target.value.trim() });
                           setEditing(null);
                         }}
-                        className="mx-3.5 my-2 w-[calc(100%-28px)] h-[52px] text-[11px] text-[#4A5560] leading-relaxed border border-teal rounded-md p-1.5 bg-paper outline-none resize-none"
+                        className="mx-3 my-2 w-[calc(100%-24px)] h-[72px] text-xs text-[#4A5560] leading-relaxed border border-teal rounded-md p-2 bg-paper outline-none resize-y"
                       />
                     ) : (
                       <p
@@ -442,232 +526,71 @@ export default function BoardPage() {
                           setEditing({ id: card.id, field: 'description' });
                         }}
                         title="더블클릭해서 수정"
-                        className={`px-3.5 py-2 m-0 text-[11px] leading-relaxed ${
+                        className={`px-3 py-2 m-0 text-xs leading-relaxed ${
                           card.description ? 'text-[#8B8272]' : 'text-[#B7AE97] italic'
                         }`}
                       >
                         {card.description || '더블클릭해서 메모 입력'}
                       </p>
                     )}
+                    {!connectMode && <button type="button" onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => { e.stopPropagation(); setEditing({ id: card.id, field: 'description' }); }}
+                      className="mx-3 mb-2 bg-transparent border-none text-[11px] text-teal cursor-pointer" aria-label={`${card.title} 메모 수정`}>
+                      메모 수정
+                    </button>}
 
-                    <button
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        navigate('/map');
-                      }}
-                      className="mx-3.5 mb-3 w-[calc(100%-28px)] bg-paper text-teal-deep text-[11px] rounded-lg py-1.5 cursor-pointer border border-line hover:border-teal transition-colors"
-                    >
-                      📖 지도 보기
-                    </button>
+                    {card.placeId && (
+                      <button
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigate(`/map?placeId=${encodeURIComponent(card.placeId!)}`);
+                        }}
+                        className="mx-3 mb-3 w-[calc(100%-24px)] bg-paper text-teal-deep text-[11px] rounded-lg py-1.5 cursor-pointer border border-line hover:border-teal transition-colors"
+                      >
+                        📖 지도에서 보기
+                      </button>
+                    )}
                   </div>
                 );
               })}
             </div>
           </div>
 
-          {/* 공동 편집 패널 */}
           {showPanel && (
-            <div className="w-[260px] shrink-0 flex flex-col gap-4 print:hidden">
+            <aside className="w-full xl:w-[260px] shrink-0 flex flex-col gap-4 print:hidden">
               <div className="bg-white border border-line rounded-2xl px-4 py-4">
-                <div className="flex items-center justify-between mb-0.5">
-                  <h4 className="m-0 text-[13px] font-display font-semibold text-teal-deep">
-                    👥 공동 편집
-                  </h4>
-                  <button
-                    onClick={() => setShowInvite(true)}
-                    className="text-[11px] font-semibold text-teal-deep bg-sand rounded-full px-2.5 py-1 cursor-pointer hover:bg-[#DCCFA8] transition-colors"
-                  >
-                    ＋ 초대
-                  </button>
-                </div>
-                <p className="m-0 mb-3 text-[11px] text-[#8B8272]">
-                  {COLLABORATORS.length}명 참여 중
-                  {invites.length > 0 && ` · ${invites.length}명 초대됨`}
-                </p>
-                <div className="flex flex-col gap-3">
-                  {COLLABORATORS.map((c) => (
-                    <div key={c.name} className="flex items-center gap-2.5">
-                      <span
-                        className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[11px] font-semibold shrink-0"
-                        style={{ background: c.color }}
-                      >
-                        {c.name[0]}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[12px] font-semibold flex items-center gap-1.5">
-                          {c.name}님
-                          {c.dot && <span className="w-1.5 h-1.5 rounded-full bg-teal inline-block" />}
-                        </div>
-                        <div className="text-[10.5px] text-[#8B8272] truncate">{c.status}</div>
+                <h4 className="m-0 mb-3 text-[13px] font-display font-semibold text-teal-deep">카드 목록 ({cards.length})</h4>
+                {cards.length ? (
+                  <div className="flex flex-col gap-2">
+                    {cards.map((card) => (
+                      <div key={card.id} className="flex items-center gap-2 text-xs text-ink-soft">
+                        <span>{card.icon ?? '•'}</span>
+                        <span className="truncate flex-1">{card.title}</span>
+                        <button type="button" onClick={() => removeBoardCard(card.id)} aria-label="카드 삭제"
+                          className="text-pin bg-transparent border-none cursor-pointer">✕</button>
                       </div>
-                    </div>
-                  ))}
-                  {invites.map((inv) => (
-                    <div key={inv.email} className="flex items-center gap-2.5 opacity-70">
-                      <span className="w-7 h-7 rounded-full bg-line flex items-center justify-center text-[11px] shrink-0">
-                        ✉️
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[12px] font-semibold truncate">{inv.email}</div>
-                        <div className="text-[10.5px] text-[#8B8272]">{inv.role} · 수락 대기</div>
-                      </div>
-                      <button
-                        onClick={() => setInvites((prev) => prev.filter((i) => i.email !== inv.email))}
-                        className="shrink-0 text-[11px] text-[#8B8272] hover:text-pin cursor-pointer"
-                        aria-label="초대 취소"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
+                ) : <p className="m-0 text-xs text-muted">장소·메모·사진 카드를 추가해 보세요.</p>}
+              </div>
+              {activityLog.length > 0 && (
+                <div className="bg-white border border-line rounded-2xl px-4 py-4">
+                  <h4 className="m-0 mb-2 text-xs font-semibold text-muted">이번 편집의 변경사항</h4>
+                  <ul className="m-0 p-0 list-none flex flex-col gap-1">
+                    {activityLog.map((item, index) => <li key={index} className="text-xs text-ink-soft">• {item}</li>)}
+                  </ul>
                 </div>
-              </div>
-
+              )}
               <div className="bg-white border border-line rounded-2xl px-4 py-4">
-                <h4 className="m-0 mb-2 text-xs uppercase tracking-wide text-[#8B8272]">최근 변경사항</h4>
-                <ul className="m-0 pl-0 list-none flex flex-col gap-1.5">
-                  {activityLog.map((a, i) => (
-                    <li key={i} className="text-[12px] text-[#4A5560] flex gap-1.5">
-                      <span className="text-teal">•</span>
-                      {a}
-                    </li>
-                  ))}
-                </ul>
+                <h4 className="m-0 mb-2 text-xs font-semibold text-teal-deep">친구와 공동 편집</h4>
+                <p className="m-0 text-xs leading-relaxed text-muted">공유 링크와 참여자 권한은 서버 저장 기능이 연결된 뒤 사용할 수 있어요. 현재 일정판은 이 브라우저에 저장됩니다.</p>
               </div>
-
-              <div className="bg-white border border-line rounded-2xl px-4 py-4">
-                <h4 className="m-0 mb-2 text-xs uppercase tracking-wide text-[#8B8272]">
-                  카드 목록 ({cards.length})
-                </h4>
-                <div className="flex flex-col gap-1.5">
-                  {cards.map((card) => (
-                    <div key={card.id} className="flex items-center gap-2 text-[12px]">
-                      <span className="shrink-0">{card.icon ?? '•'}</span>
-                      <span className="truncate flex-1">{card.title}</span>
-                      <button
-                        onClick={() => removeBoardCard(card.id)}
-                        className="shrink-0 text-pin text-[11px] cursor-pointer bg-transparent border-none hover:underline"
-                        aria-label="카드 삭제"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
+            </aside>
           )}
         </div>
       </div>
 
-      {/* 친구 초대 모달 (캔바처럼 링크/메일로 초대) */}
-      {showInvite && (
-        <div
-          className="fixed inset-0 z-[2000] bg-black/40 flex items-center justify-center p-4"
-          onClick={() => setShowInvite(false)}
-        >
-          <div
-            className="bg-white rounded-2xl w-full max-w-[380px] p-5 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between mb-1">
-              <h3 className="m-0 text-[15px] font-display font-semibold text-teal-deep">
-                일정판에 친구 초대
-              </h3>
-              <button
-                onClick={() => setShowInvite(false)}
-                className="text-[#8B8272] hover:text-ink cursor-pointer text-[15px] leading-none"
-                aria-label="닫기"
-              >
-                ✕
-              </button>
-            </div>
-            <p className="m-0 mb-4 text-[12px] text-[#8B8272]">
-              링크를 공유하거나 이메일로 초대하면 함께 일정을 편집할 수 있어요.
-            </p>
-
-            {/* 공유 링크 */}
-            <label className="text-[11px] font-semibold text-[#7A7364] block mb-1">공유 링크</label>
-            <div className="flex gap-2 mb-4">
-              <input
-                ref={shareInputRef}
-                readOnly
-                value={shareLink}
-                onFocus={(e) => e.currentTarget.select()}
-                className="flex-1 min-w-0 border border-line rounded-lg px-2.5 py-2 text-[12px] bg-paper text-[#4A5560] outline-none"
-              />
-              <button
-                onClick={copyShareLink}
-                className="shrink-0 bg-teal-deep text-white rounded-lg px-3 text-[12px] font-semibold cursor-pointer hover:bg-teal transition-colors"
-              >
-                {linkCopied ? '복사됨 ✓' : '링크 복사'}
-              </button>
-            </div>
-
-            {/* 이메일 초대 */}
-            <label className="text-[11px] font-semibold text-[#7A7364] block mb-1">
-              이메일로 초대
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="email"
-                value={inviteEmail}
-                onChange={(e) => setInviteEmail(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && sendInvite()}
-                placeholder="friend@example.com"
-                className="flex-1 min-w-0 border border-line rounded-lg px-2.5 py-2 text-[12px] outline-none focus:border-teal"
-              />
-              <select
-                value={inviteRole}
-                onChange={(e) => setInviteRole(e.target.value as '편집 가능' | '보기 전용')}
-                className="shrink-0 border border-line rounded-lg px-1.5 text-[11px] bg-white outline-none cursor-pointer"
-              >
-                <option>편집 가능</option>
-                <option>보기 전용</option>
-              </select>
-              <button
-                onClick={sendInvite}
-                className="shrink-0 bg-teal-deep text-white rounded-lg px-3 text-[12px] font-semibold cursor-pointer hover:bg-teal transition-colors"
-              >
-                보내기
-              </button>
-            </div>
-
-            {invites.length > 0 && (
-              <div className="mt-4">
-                <div className="text-[11px] font-semibold text-[#7A7364] mb-1.5">
-                  초대한 사람 ({invites.length})
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  {invites.map((inv) => (
-                    <div
-                      key={inv.email}
-                      className="flex items-center gap-2 text-[12px] bg-paper rounded-lg px-2.5 py-1.5"
-                    >
-                      <span className="truncate flex-1">{inv.email}</span>
-                      <span className="text-[10.5px] text-[#8B8272]">{inv.role} · 대기</span>
-                      <button
-                        onClick={() =>
-                          setInvites((prev) => prev.filter((i) => i.email !== inv.email))
-                        }
-                        className="text-[#8B8272] hover:text-pin cursor-pointer"
-                        aria-label="초대 취소"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <p className="m-0 mt-4 text-[10.5px] text-[#B7AE97]">
-              * 데모 화면입니다. 실제 링크·메일 발송은 백엔드 연동 후 동작해요.
-            </p>
-          </div>
-        </div>
-      )}
     </>
   );
 }

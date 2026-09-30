@@ -1,5 +1,4 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import { clearPersistedTrip } from './TripContext';
 
 const API_BASE = 'http://localhost:4000';
 
@@ -69,7 +68,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   function logout() {
     localStorage.removeItem('token');
-    clearPersistedTrip(); // 다음 사용자가 이전 사용자 데이터를 보지 않도록
     setUser(null);
   }
 

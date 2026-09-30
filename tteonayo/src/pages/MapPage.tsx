@@ -2,6 +2,7 @@ import 'leaflet/dist/leaflet.css';
 import { useState, useMemo, useEffect, useRef, type RefObject } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
+import { useSearchParams } from 'react-router-dom';
 import Topbar from '../components/Topbar';
 import { useTrip } from '../context/TripContext';
 import type { Place } from '../types';
@@ -124,6 +125,8 @@ function PlacePopup({ place }: { place: Place }) {
 }
 
 export default function MapPage() {
+  const [searchParams] = useSearchParams();
+  const placeIdParam = searchParams.get('placeId');
   const { places, updatePlacePosition, renamePlace, savedIds, isSaved, toggleSaved, memos } =
     useTrip();
   const [activeCategory, setActiveCategory] = useState<Place['category'] | null>(null);
@@ -131,6 +134,12 @@ export default function MapPage() {
   const [selected, setSelected] = useState<Place | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const markerRefs = useRef<Record<string, L.Marker | null>>({});
+
+  useEffect(() => {
+    if (!placeIdParam) return;
+    const place = places.find((item) => item.id === placeIdParam);
+    if (place) setSelected(place);
+  }, [placeIdParam, places]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -155,7 +164,7 @@ export default function MapPage() {
 
   return (
     <>
-      <Topbar title="스마트 여정 지도" stamp="순천 2박 3일 일정 탐색" />
+      <Topbar title="스마트 여정 지도" stamp="장소 탐색과 기록" />
       <div className="flex-1 overflow-y-auto p-8">
         <div className="flex gap-1.5 flex-wrap pb-3.5">
           {FILTERS.map((f) => (
@@ -212,11 +221,6 @@ export default function MapPage() {
               className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] w-[260px] bg-white/95 border border-line rounded-full px-4 py-2 text-[12px] shadow-md outline-none focus:border-teal"
             />
 
-            {/* 날씨 칩 */}
-            <div className="absolute top-3 right-3 z-[1000] bg-white/95 border border-line rounded-full px-3 py-1.5 text-[12px] text-ink shadow-md pointer-events-none">
-              🌤 순천 · 18°C
-            </div>
-
             {/* 안내 토스트 */}
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] bg-teal-deep/95 text-paper rounded-full px-4 py-2 text-[11px] shadow-lg pointer-events-none">
               📍 핀을 드래그해 위치를 옮기고, 클릭해 메모·저장하세요
@@ -227,7 +231,7 @@ export default function MapPage() {
           <div className="w-80 border-l border-line bg-white overflow-y-auto shrink-0">
             <div className="p-4 border-b border-line">
               <h3 className="m-0 text-sm font-display font-semibold text-teal-deep">📍 저장한 장소</h3>
-              <p className="m-0 mt-1 text-[11px] text-[#8B8272]">저장한 장소가 AI 추천에 활용됩니다</p>
+              <p className="m-0 mt-1 text-[11px] text-[#8B8272]">저장한 장소를 일정판 카드로 불러올 수 있어요</p>
             </div>
 
             <div className="px-4 pt-3 pb-1 text-xs tracking-wider uppercase text-[#8B8272] font-semibold">

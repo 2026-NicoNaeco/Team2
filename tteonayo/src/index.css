@@ -56,6 +56,19 @@ body {
   word-break: keep-all;
 }
 
+@keyframes hero-map-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.hero-map-float {
+  animation: hero-map-float 5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-map-float { animation: none; }
+}
+
 /* 일정판 "PDF 저장"(브라우저 인쇄) 시 캔버스만 깔끔하게 남기기 */
 @media print {
   body {
