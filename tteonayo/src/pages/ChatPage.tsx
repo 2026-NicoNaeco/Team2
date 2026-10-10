@@ -1,24 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Topbar from '../components/Topbar';
-import { useAuth } from '../context/AuthContext';
+import { useTrip } from '../context/TripContext';
 import { fetchRegionWeather, type RegionWeather } from '../services/weather';
+import { findDomesticRegions, searchDomesticRegions, type RegionOption } from '../services/domesticRegions';
 import type { ChatConversation, ChatMessage } from '../types';
-
-function loadConversations(userId: number): ChatConversation[] {
-  try {
-    const raw: unknown = JSON.parse(localStorage.getItem(`tteonayo:chat:${userId}`) || '[]');
-    if (!Array.isArray(raw)) return [];
-    return raw.filter((item): item is ChatConversation =>
-      item !== null && typeof item === 'object' &&
-      typeof item.id === 'string' && typeof item.region === 'string' &&
-      typeof item.title === 'string' && Array.isArray(item.messages) &&
-      typeof item.createdAt === 'string' && typeof item.updatedAt === 'string'
-    );
-  } catch {
-    return [];
-  }
-}
 
 type WeatherState =
   | { status: 'idle' | 'loading' }
@@ -27,27 +13,44 @@ type WeatherState =
 
 export default function ChatPage() {
   const navigate = useNavigate();
-  const { user } = useAuth();
-  const userId = user?.id ?? 0;
-  const [conversations, setConversations] = useState<ChatConversation[]>(() => loadConversations(userId));
-  const [selectedId, setSelectedId] = useState<string | null>(() => loadConversations(userId)[0]?.id ?? null);
+  const { chatConversations: conversations, setChatConversations: setConversations } = useTrip();
+  const [selectedId, setSelectedId] = useState<string | null>(conversations[0]?.id ?? null);
   const [newRegion, setNewRegion] = useState('');
+  const [selectedRegion, setSelectedRegion] = useState<RegionOption | null>(null);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
+  const [remoteResult, setRemoteResult] = useState<{ query: string; regions: RegionOption[] } | null>(null);
+  const [regionSearchError, setRegionSearchError] = useState<{ query: string; message: string } | null>(null);
   const [showNewForm, setShowNewForm] = useState(false);
   const [input, setInput] = useState('');
-  const [storageError, setStorageError] = useState('');
   const [weather, setWeather] = useState<WeatherState>({ status: 'idle' });
   const scrollRef = useRef<HTMLDivElement>(null);
   const active = conversations.find((item) => item.id === selectedId) ?? null;
   const ordered = [...conversations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const regionQuery = newRegion.trim();
+  const suggestions = useMemo(() => findDomesticRegions(
+    regionQuery,
+    remoteResult?.query === regionQuery ? remoteResult.regions : [],
+  ), [regionQuery, remoteResult]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(`tteonayo:chat:${userId}`, JSON.stringify(conversations));
-      setStorageError('');
-    } catch {
-      setStorageError('대화를 이 브라우저에 저장하지 못했습니다. 저장 공간을 확인해주세요.');
-    }
-  }, [conversations, userId]);
+    if (!showNewForm || regionQuery.length < 2 || regionQuery.length > 50) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      searchDomesticRegions(regionQuery, controller.signal)
+        .then((regions) => {
+          setRemoteResult({ query: regionQuery, regions });
+          setRegionSearchError(null);
+        })
+        .catch((error: unknown) => {
+          if (!controller.signal.aborted) setRegionSearchError({
+            query: regionQuery,
+            message: error instanceof Error ? error.message : '지역을 검색하지 못했습니다.',
+          });
+        });
+    }, 350);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [regionQuery, showNewForm]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -60,26 +63,40 @@ export default function ChatPage() {
     }
     const controller = new AbortController();
     setWeather({ status: 'loading' });
-    fetchRegionWeather(active.region, controller.signal)
+    fetchRegionWeather(active.region, controller.signal, {
+      countryCode: active.regionCountryCode,
+      coordinates: active.regionCoordinates,
+    })
       .then((value) => setWeather({ status: 'success', value }))
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         setWeather({ status: 'error', message: error instanceof Error ? error.message : '날씨를 불러오지 못했습니다.' });
       });
     return () => controller.abort();
-  }, [active?.region]);
+  }, [active?.region, active?.regionCountryCode, active?.regionCoordinates]);
 
-  const createConversation = () => {
-    const region = newRegion.trim();
-    if (region.length < 2 || region.length > 50) return;
+  const chooseRegion = (option: RegionOption) => {
+    setNewRegion(option.name);
+    setSelectedRegion(option);
+    setShowSuggestions(false);
+    setSuggestionIndex(0);
+  };
+
+  const createConversation = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selectedRegion || selectedRegion.name !== newRegion.trim()) return;
+    const region = selectedRegion.name;
     const now = new Date().toISOString();
     const conversation: ChatConversation = {
       id: crypto.randomUUID(), region, title: `${region} 여행`,
+      regionCountryCode: 'KR',
+      regionCoordinates: selectedRegion.coordinates,
       messages: [], createdAt: now, updatedAt: now,
     };
     setConversations((previous) => [conversation, ...previous]);
     setSelectedId(conversation.id);
     setNewRegion('');
+    setSelectedRegion(null);
     setInput('');
     setShowNewForm(false);
   };
@@ -113,14 +130,62 @@ export default function ChatPage() {
             <button type="button" onClick={() => setShowNewForm((value) => !value)}
               className="w-full rounded-xl bg-teal-deep text-white py-2.5 text-sm font-semibold cursor-pointer border-none">＋ 새 지역 대화</button>
             {showNewForm && (
-              <div className="rounded-xl bg-paper p-3 flex flex-col gap-2">
+              <form onSubmit={createConversation} className="rounded-xl bg-paper p-3 flex flex-col gap-2">
                 <label htmlFor="new-chat-region" className="text-xs font-semibold text-teal-deep">가고 싶은 지역</label>
                 <input id="new-chat-region" autoFocus value={newRegion} maxLength={50}
-                  onChange={(event) => setNewRegion(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') createConversation(); }}
-                  placeholder="예: 순천, 제주, 도쿄" className="w-full box-border rounded-lg border border-line bg-white px-3 py-2 text-sm outline-teal" />
-                <button type="button" onClick={createConversation} disabled={newRegion.trim().length < 2}
+                  role="combobox" aria-autocomplete="list" aria-controls="region-suggestions"
+                  aria-expanded={showSuggestions && regionQuery.length > 0}
+                  aria-activedescendant={showSuggestions && suggestions.length ? `region-option-${Math.min(suggestionIndex, suggestions.length - 1)}` : undefined}
+                  onFocus={() => setShowSuggestions(true)}
+                  onChange={(event) => {
+                    setNewRegion(event.target.value);
+                    setSelectedRegion(null);
+                    setShowSuggestions(true);
+                    setSuggestionIndex(0);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'ArrowDown' && suggestions.length) {
+                      event.preventDefault();
+                      setShowSuggestions(true);
+                      setSuggestionIndex((index) => (index + 1) % suggestions.length);
+                    } else if (event.key === 'ArrowUp' && suggestions.length) {
+                      event.preventDefault();
+                      setShowSuggestions(true);
+                      setSuggestionIndex((index) => (index - 1 + suggestions.length) % suggestions.length);
+                    } else if (event.key === 'Enter' && showSuggestions && suggestions.length) {
+                      event.preventDefault();
+                      chooseRegion(suggestions[Math.min(suggestionIndex, suggestions.length - 1)]);
+                    } else if (event.key === 'Enter' && !selectedRegion) {
+                      event.preventDefault();
+                    } else if (event.key === 'Escape') {
+                      setShowSuggestions(false);
+                    }
+                  }}
+                  placeholder="예: 순천, 제주, 강릉" className="w-full box-border rounded-lg border border-line bg-white px-3 py-2 text-sm outline-teal" />
+                {showSuggestions && regionQuery && (
+                  <div id="region-suggestions" role="listbox" aria-label="국내 지역 검색 결과"
+                    className="max-h-48 overflow-y-auto rounded-lg border border-line bg-white">
+                    {suggestions.length ? suggestions.map((option, index) => (
+                      <button key={`${option.name}:${option.area ?? ''}`} id={`region-option-${index}`}
+                        type="button" role="option" aria-selected={index === suggestionIndex}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => chooseRegion(option)}
+                        className={`block w-full border-none px-3 py-2 text-left text-xs cursor-pointer ${index === suggestionIndex ? 'bg-paper text-teal-deep' : 'bg-white text-ink-soft hover:bg-paper'}`}>
+                        <span className="font-semibold">{option.name}</span>
+                        {option.area && <span className="ml-1 text-muted">{option.area}</span>}
+                      </button>
+                    )) : (
+                      <p className="m-0 px-3 py-2 text-xs text-muted">
+                        {regionSearchError?.query === regionQuery ? regionSearchError.message
+                          : remoteResult?.query === regionQuery ? '일치하는 국내 지역이 없어요.' : '국내 지역을 찾는 중이에요.'}
+                      </p>
+                    )}
+                  </div>
+                )}
+                <p className="m-0 text-[11px] text-muted">목록에서 지역을 선택하면 대화를 만들 수 있어요.</p>
+                <button type="submit" disabled={!selectedRegion || selectedRegion.name !== newRegion.trim()}
                   className="rounded-lg bg-teal text-white py-2 text-xs cursor-pointer border-none disabled:opacity-50">대화 만들기</button>
-              </div>
+              </form>
             )}
             <div className="text-[11px] font-semibold text-muted px-2">이전 대화 · {conversations.length}개</div>
             {ordered.length ? (
@@ -169,12 +234,10 @@ export default function ChatPage() {
                       className="shrink-0 rounded-xl bg-teal-deep text-white px-4 py-3 text-sm font-semibold cursor-pointer border-none disabled:opacity-50">저장</button>
                   </div>
                   <p className="m-0 mt-2 text-[11px] text-muted">Enter로 저장 · Shift+Enter로 줄바꿈 · 실제 AI 응답은 아직 제공되지 않습니다.</p>
-                  {storageError && <p role="alert" className="m-0 mt-2 text-xs text-pin">{storageError}</p>}
                 </div>
               </>
             ) : (
               <div className="flex-1 flex flex-col items-center justify-center text-center p-6 gap-3">
-                <span className="text-4xl" aria-hidden="true">🧭</span>
                 <h1 className="m-0 font-display text-xl text-ink">어디로 떠나고 싶으세요?</h1>
                 <p className="m-0 text-sm text-muted">왼쪽에서 지역별 대화를 만들면 여행 기록과 정보를 한곳에서 볼 수 있어요.</p>
                 <button type="button" onClick={() => setShowNewForm(true)} className="rounded-xl bg-teal-deep text-white px-4 py-2.5 text-sm cursor-pointer border-none">새 지역 대화 만들기</button>

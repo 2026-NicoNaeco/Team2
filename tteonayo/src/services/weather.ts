@@ -25,15 +25,30 @@ function describeWeather(code: number): string {
   return '상태 확인 불가';
 }
 
-export async function fetchRegionWeather(region: string, signal: AbortSignal): Promise<RegionWeather> {
-  const geocodingUrl = new URL('https://geocoding-api.open-meteo.com/v1/search');
-  geocodingUrl.searchParams.set('name', region);
-  geocodingUrl.searchParams.set('count', '1');
-  geocodingUrl.searchParams.set('language', 'ko');
-  const locationResponse = await fetch(geocodingUrl, { signal });
-  if (!locationResponse.ok) throw new Error('지역을 찾지 못했습니다.');
-  const locationData = await locationResponse.json() as GeocodingResponse;
-  const location = locationData.results?.[0];
+export async function fetchRegionWeather(
+  region: string,
+  signal: AbortSignal,
+  options?: { countryCode?: 'KR'; coordinates?: { lat: number; lng: number } },
+): Promise<RegionWeather> {
+  let location: { name: string; country?: string; latitude: number; longitude: number } | undefined;
+  if (options?.coordinates) {
+    location = {
+      name: region,
+      country: options.countryCode === 'KR' ? '대한민국' : undefined,
+      latitude: options.coordinates.lat,
+      longitude: options.coordinates.lng,
+    };
+  } else {
+    const geocodingUrl = new URL('https://geocoding-api.open-meteo.com/v1/search');
+    geocodingUrl.searchParams.set('name', region);
+    geocodingUrl.searchParams.set('count', '1');
+    geocodingUrl.searchParams.set('language', 'ko');
+    if (options?.countryCode) geocodingUrl.searchParams.set('countryCode', options.countryCode);
+    const locationResponse = await fetch(geocodingUrl, { signal });
+    if (!locationResponse.ok) throw new Error('지역을 찾지 못했습니다.');
+    const locationData = await locationResponse.json() as GeocodingResponse;
+    location = locationData.results?.[0];
+  }
   if (!location || !Number.isFinite(location.latitude) || !Number.isFinite(location.longitude)) {
     throw new Error('지역을 찾지 못했습니다. 도시 이름을 확인해주세요.');
   }

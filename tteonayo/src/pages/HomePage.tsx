@@ -12,8 +12,7 @@ function SectionTitle({
 }) {
   return (
     <div className="flex items-center justify-between mb-4">
-      <div className="flex items-center gap-2.5">
-        <span className="w-1 h-5 rounded-full bg-teal" />
+      <div className="flex items-center">
         <h2 className="m-0 text-[17px] font-display font-bold text-ink">{children}</h2>
       </div>
       {action}
@@ -28,9 +27,9 @@ export default function HomePage() {
   const recentBoards = [...savedBoards].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 3);
 
   const stats = [
-    { emoji: '📍', value: savedIds.length, label: '저장한 장소' },
-    { emoji: '📖', value: savedBoards.length, label: '저장한 일정판' },
-    { emoji: '🗓️', value: boardCards.length, label: '현재 일정판 카드' },
+    { value: savedIds.length, label: '저장한 장소' },
+    { value: savedBoards.length, label: '저장한 일정판' },
+    { value: boardCards.length, label: '현재 일정판 카드' },
   ];
 
   return (
@@ -40,12 +39,6 @@ export default function HomePage() {
         <div className="max-w-[1080px] mx-auto px-8 py-8">
           {/* 히어로 */}
           <section className="bg-teal-deep text-paper rounded-[20px] px-9 py-9 relative overflow-hidden mb-6 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-7">
-            <div className="absolute right-9 top-9 hidden lg:flex items-center gap-2 font-mono text-[11px] text-[#BFE0DB]">
-              <span>기록</span>
-              <span className="w-12 border-t border-dashed border-[#5A928D]" />
-              <span className="w-1.5 h-1.5 rounded-full bg-pin" />
-              <span>여행</span>
-            </div>
             <div className="relative z-10 lg:max-w-[440px]">
               <h1 className="font-display text-[30px] leading-[1.35] mb-3">
                 기록이 곧, 다음 여행이 됩니다
@@ -70,11 +63,8 @@ export default function HomePage() {
             {stats.map((s) => (
               <div
                 key={s.label}
-                className="bg-white rounded-2xl px-5 py-4 flex items-center gap-3.5 shadow-card"
+                className="bg-white rounded-xl border border-line px-6 py-5"
               >
-                <span className="w-11 h-11 rounded-xl bg-paper flex items-center justify-center text-[20px] shrink-0">
-                  {s.emoji}
-                </span>
                 <div>
                   <div className="font-display text-[26px] font-bold text-teal-deep leading-none">
                     {s.value}
@@ -88,14 +78,12 @@ export default function HomePage() {
           <SectionTitle>다음 여행 준비</SectionTitle>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-12">
             <button type="button" onClick={() => navigate('/map')}
-              className="bg-white rounded-2xl p-6 text-left shadow-card cursor-pointer border border-transparent hover:border-teal">
-              <div className="text-2xl mb-3">📍</div>
+              className="bg-white rounded-xl p-6 text-left cursor-pointer border border-line hover:border-teal">
               <h3 className="m-0 text-[16px] font-semibold text-teal-deep">장소 기록하기</h3>
               <p className="m-0 mt-2 text-sm leading-relaxed text-muted">지도에서 가고 싶은 장소를 저장하고 메모를 남겨보세요.</p>
             </button>
             <button type="button" onClick={() => navigate('/chat')}
-              className="bg-white rounded-2xl p-6 text-left shadow-card cursor-pointer border border-transparent hover:border-teal">
-              <div className="text-2xl mb-3">💬</div>
+              className="bg-white rounded-xl p-6 text-left cursor-pointer border border-line hover:border-teal">
               <h3 className="m-0 text-[16px] font-semibold text-teal-deep">지역별 대화 이어가기</h3>
               <p className="m-0 mt-2 text-sm leading-relaxed text-muted">여행 지역별 질문을 기록하고 현재 날씨를 확인해 보세요.</p>
             </button>
@@ -113,16 +101,17 @@ export default function HomePage() {
                     !window.confirm('저장하지 않은 일정판 변경사항이 있습니다. 다른 일정판을 열까요?')) return;
                   if (openBoard(board.id)) navigate('/board');
                 }}
-                  className="bg-white rounded-2xl p-5 text-left shadow-card cursor-pointer border border-transparent hover:border-teal">
-                  <div className="text-2xl mb-3">🗺️</div>
+                  className="bg-white rounded-xl p-5 text-left cursor-pointer border border-line hover:border-teal">
                   <h3 className="m-0 text-[15px] font-semibold text-teal-deep line-clamp-2">{board.title}</h3>
+                  {(board.tripMeta?.region || board.tripMeta?.startDate) &&
+                    <p className="m-0 mt-2 text-xs text-muted">{[board.tripMeta?.region, board.tripMeta?.startDate].filter(Boolean).join(' · ')}</p>}
                   <p className="m-0 mt-2 text-xs text-muted">카드 {board.cards.length}개 · 동선 {board.connections.length}개</p>
                   <span className="block mt-4 text-xs text-teal">일정판 다시 열기 →</span>
                 </button>
               ))}
             </div>
           ) : (
-            <div className="bg-white border border-dashed border-line rounded-2xl p-6 text-sm text-muted">
+            <div className="bg-white border border-line rounded-xl p-6 text-sm text-muted">
               아직 저장한 일정판이 없어요. 화이트보드에서 여행 동선을 만들고 기록함에 저장해 보세요.
             </div>
           )}

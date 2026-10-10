@@ -1,12 +1,14 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const db = require('./db');
 const { signToken, requireAuth } = require('./auth');
+const travelRoutes = require('./travelRoutes');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '8mb' }));
 
 // 회원가입
 app.post('/api/auth/signup', (req, res) => {
@@ -59,7 +61,19 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
   res.json({ user: { id: row.id, email: row.email, name: row.name } });
 });
 
-const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
-  console.log(`떠나요 백엔드 서버 실행 중: http://localhost:${PORT}`);
+app.use('/api/travel', requireAuth, travelRoutes);
+
+app.use((error, req, res, next) => {
+  if (error?.type === 'entity.too.large') return res.status(413).json({ error: '저장 데이터가 너무 큽니다.' });
+  console.error('요청 처리 오류:', error);
+  res.status(500).json({ error: '요청을 처리하지 못했습니다.' });
 });
+
+const PORT = process.env.PORT || 4000;
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`떠나요 백엔드 서버 실행 중: http://localhost:${PORT}`);
+  });
+}
+
+module.exports = app;

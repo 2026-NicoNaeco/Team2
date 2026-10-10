@@ -16,21 +16,24 @@ function BoardArchiveCard({
   onShare: (board: SavedBoard) => void;
 }) {
   return (
-    <article className="bg-white border border-line rounded-2xl p-5 shadow-card flex flex-col gap-4">
+    <article className="bg-white border border-line rounded-xl p-5 flex flex-col gap-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="m-0 font-display text-[18px] font-semibold text-teal-deep break-words">{board.title}</h2>
           <p className="m-0 mt-1 text-xs text-muted">
-            {new Date(board.updatedAt).toLocaleDateString('ko-KR')} 수정 · 카드 {board.cards.length}개 · 동선 {board.connections.length}개
+            {[board.tripMeta?.region, board.tripMeta?.startDate && board.tripMeta?.endDate
+              ? `${board.tripMeta.startDate} ~ ${board.tripMeta.endDate}` : board.tripMeta?.startDate,
+              `${new Date(board.updatedAt).toLocaleDateString('ko-KR')} 수정`].filter(Boolean).join(' · ')}
           </p>
+          <p className="m-0 mt-1 text-xs text-muted">카드 {board.cards.length}개 · 동선 {board.connections.length}개</p>
         </div>
-        <span className="shrink-0 text-[11px] text-teal-deep bg-paper rounded-full px-2.5 py-1">일정판</span>
+        <span className="shrink-0 text-[11px] text-teal-deep">일정판</span>
       </div>
 
-      <div className="min-h-[95px] border border-dashed border-line rounded-xl bg-paper p-3 flex flex-wrap content-start gap-2">
+      <div className="min-h-[95px] border border-line rounded-lg bg-paper p-3 flex flex-wrap content-start gap-2">
         {board.cards.length ? board.cards.slice(0, 5).map((card) => (
           <span key={card.id} className="max-w-full truncate bg-white border border-line rounded-lg px-2.5 py-1.5 text-xs text-ink-soft">
-            {card.icon ?? '📍'} {card.title}
+            {card.title}
           </span>
         )) : <span className="text-xs text-muted">아직 카드가 없는 일정판</span>}
         {board.cards.length > 5 && <span className="text-xs text-muted self-center">외 {board.cards.length - 5}개</span>}
@@ -96,14 +99,13 @@ export default function DiaryPage() {
               ))}
             </div>
           ) : (
-            <div className="min-h-[320px] bg-white border border-dashed border-line rounded-2xl flex flex-col items-center justify-center text-center gap-3 p-6">
-              <span className="text-4xl" aria-hidden="true">🗺️</span>
+            <div className="min-h-[320px] bg-white border border-line rounded-xl flex flex-col items-center justify-center text-center gap-3 p-6">
               <p className="m-0 text-[16px] font-semibold text-ink">아직 저장한 일정판이 없어요.</p>
               <p className="m-0 text-sm text-muted">장소와 메모, 사진 카드를 배치하고 동선을 연결해 보세요.</p>
               <button type="button" onClick={startBoard} className="mt-2 px-4 py-2.5 rounded-xl bg-teal text-white text-sm font-semibold cursor-pointer border-none">일정판 만들기</button>
             </div>
           )}
-          <p className="mt-5 text-xs text-muted">현재 일정판은 이 브라우저에 저장됩니다. 공동 편집 링크는 서버 연동 후 제공됩니다.</p>
+          <p className="mt-5 text-xs text-muted">일정판은 로그인 계정의 서버에 저장됩니다. 공동 편집 링크는 아직 제공되지 않습니다.</p>
         </div>
       </div>
 
@@ -114,8 +116,8 @@ export default function DiaryPage() {
               <h2 className="m-0 font-display text-lg font-semibold text-teal-deep">{sharingBoard.title} 공유</h2>
               <button type="button" onClick={() => setSharingBoard(null)} aria-label="닫기" className="text-muted bg-transparent border-none cursor-pointer">✕</button>
             </div>
-            <p className="text-sm text-ink-soft leading-relaxed mt-4 mb-2">친구와 같은 일정판을 편집하는 기능은 서버 저장과 참여자 권한 설정이 연결된 뒤 사용할 수 있어요.</p>
-            <p className="text-xs text-muted m-0">지금은 내 브라우저에만 저장되어 있어 링크를 보내도 친구가 이 일정판을 볼 수 없습니다.</p>
+            <p className="text-sm text-ink-soft leading-relaxed mt-4 mb-2">친구와 같은 일정판을 편집하는 기능은 공유 링크와 참여자 권한 설정이 구현된 뒤 사용할 수 있어요.</p>
+            <p className="text-xs text-muted m-0">지금은 로그인한 본인만 이 일정판을 열 수 있어 친구에게 링크로 보여줄 수 없습니다.</p>
             <button type="button" onClick={() => setSharingBoard(null)} className="mt-5 w-full py-2.5 rounded-lg bg-teal-deep text-white text-sm cursor-pointer border-none">확인</button>
           </div>
         </div>

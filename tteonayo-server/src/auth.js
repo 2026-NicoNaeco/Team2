@@ -1,6 +1,16 @@
 const jwt = require('jsonwebtoken');
+const { randomBytes } = require('node:crypto');
+const db = require('./db');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-this-in-production';
+let JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') throw new Error('운영 환경에는 JWT_SECRET 환경변수가 필요합니다.');
+  JWT_SECRET = db.get('jwtSecret').value();
+  if (!JWT_SECRET) {
+    JWT_SECRET = randomBytes(32).toString('hex');
+    db.set('jwtSecret', JWT_SECRET).write();
+  }
+}
 
 function signToken(user) {
   return jwt.sign({ id: user.id, email: user.email, name: user.name }, JWT_SECRET, {
