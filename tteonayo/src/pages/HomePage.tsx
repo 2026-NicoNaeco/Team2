@@ -1,7 +1,10 @@
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Topbar from '../components/Topbar';
 import { useAuth } from '../context/AuthContext';
 import { useTrip } from '../context/TripContext';
+import { listBoards } from '../services/boards';
+import type { BoardApiSummary } from '../types';
 
 function SectionTitle({
   children,
@@ -13,7 +16,7 @@ function SectionTitle({
   return (
     <div className="flex items-center justify-between mb-4">
       <div className="flex items-center">
-        <h2 className="m-0 text-[17px] font-display font-bold text-ink">{children}</h2>
+        <h2 className="m-0 text-[length:calc(17px*var(--font-scale))] font-display font-bold text-ink">{children}</h2>
       </div>
       {action}
     </div>
@@ -23,12 +26,24 @@ function SectionTitle({
 export default function HomePage() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { savedIds, savedBoards, boardCards, activeBoardId, hasUnsavedBoardChanges, openBoard } = useTrip();
-  const recentBoards = [...savedBoards].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 3);
+  const { savedIds, boardCards, hasUnsavedBoardChanges } = useTrip();
+  const [boards, setBoards] = useState<BoardApiSummary[]>([]);
+  const [boardsLoading, setBoardsLoading] = useState(true);
+  const [boardsError, setBoardsError] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    void listBoards().then((items) => {
+      if (!cancelled) setBoards(items);
+    }).catch((reason: unknown) => {
+      if (!cancelled) setBoardsError(reason instanceof Error ? reason.message : '일정판 목록을 불러오지 못했어요.');
+    }).finally(() => { if (!cancelled) setBoardsLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+  const recentBoards = boards.slice(0, 3);
 
   const stats = [
     { value: savedIds.length, label: '저장한 장소' },
-    { value: savedBoards.length, label: '저장한 일정판' },
+    { value: boardsLoading || boardsError ? '—' : boards.length, label: '저장한 일정판' },
     { value: boardCards.length, label: '현재 일정판 카드' },
   ];
 
@@ -40,15 +55,15 @@ export default function HomePage() {
           {/* 히어로 */}
           <section className="bg-teal-deep text-paper rounded-[20px] px-9 py-9 relative overflow-hidden mb-6 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-7">
             <div className="relative z-10 lg:max-w-[440px]">
-              <h1 className="font-display text-[30px] leading-[1.35] mb-3">
+              <h1 className="font-display text-[length:calc(30px*var(--font-scale))] leading-[1.35] mb-3">
                 기록이 곧, 다음 여행이 됩니다
               </h1>
-              <p className="text-[#E4EFEC] text-[14.5px] leading-[1.75] mb-6">
+              <p className="text-[#E4EFEC] text-[length:calc(14.5px*var(--font-scale))] leading-[1.75] mb-6">
                 저장한 장소를 카드로 불러와 여행 동선을 만들고, 메모와 사진을 더해 나만의 일정판을 완성해 보세요.
               </p>
               <button
                 onClick={() => navigate('/board')}
-                className="bg-pin hover:bg-[#c23c3c] text-white px-6 py-3 rounded-xl text-[14.5px] font-bold cursor-pointer border-none transition-colors"
+                className="bg-pin hover:bg-[#c23c3c] text-white px-6 py-3 rounded-xl text-[length:calc(14.5px*var(--font-scale))] font-bold cursor-pointer border-none transition-colors"
               >
                 내 일정판 열기 →
               </button>
@@ -66,10 +81,10 @@ export default function HomePage() {
                 className="bg-white rounded-xl border border-line px-6 py-5"
               >
                 <div>
-                  <div className="font-display text-[26px] font-bold text-teal-deep leading-none">
+                  <div className="font-display text-[length:calc(26px*var(--font-scale))] font-bold text-teal-deep leading-none">
                     {s.value}
                   </div>
-                  <div className="text-[13px] text-muted font-medium mt-2">{s.label}</div>
+                  <div className="text-[length:calc(13px*var(--font-scale))] text-muted font-medium mt-2">{s.label}</div>
                 </div>
               </div>
             ))}
@@ -79,33 +94,33 @@ export default function HomePage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-12">
             <button type="button" onClick={() => navigate('/map')}
               className="bg-white rounded-xl p-6 text-left cursor-pointer border border-line hover:border-teal">
-              <h3 className="m-0 text-[16px] font-semibold text-teal-deep">장소 기록하기</h3>
+              <h3 className="m-0 text-[length:calc(16px*var(--font-scale))] font-semibold text-teal-deep">장소 기록하기</h3>
               <p className="m-0 mt-2 text-sm leading-relaxed text-muted">지도에서 가고 싶은 장소를 저장하고 메모를 남겨보세요.</p>
             </button>
             <button type="button" onClick={() => navigate('/chat')}
               className="bg-white rounded-xl p-6 text-left cursor-pointer border border-line hover:border-teal">
-              <h3 className="m-0 text-[16px] font-semibold text-teal-deep">지역별 대화 이어가기</h3>
+              <h3 className="m-0 text-[length:calc(16px*var(--font-scale))] font-semibold text-teal-deep">지역별 대화 이어가기</h3>
               <p className="m-0 mt-2 text-sm leading-relaxed text-muted">여행 지역별 질문을 기록하고 현재 날씨를 확인해 보세요.</p>
             </button>
           </div>
 
           <SectionTitle action={<button type="button" onClick={() => navigate('/diary')}
-            className="text-[12.5px] text-teal font-semibold bg-transparent border-none cursor-pointer">기록함 전체 보기 →</button>}>
+            className="text-[length:calc(12.5px*var(--font-scale))] text-teal font-semibold bg-transparent border-none cursor-pointer">기록함 전체 보기 →</button>}>
             최근 저장한 일정판
           </SectionTitle>
-          {recentBoards.length ? (
+          {boardsError ? <p role="alert" className="bg-white border border-line rounded-xl p-6 text-sm text-pin">{boardsError}</p> : boardsLoading ? (
+            <p role="status" className="bg-white border border-line rounded-xl p-6 text-sm text-muted">일정판을 불러오는 중...</p>
+          ) : recentBoards.length ? (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
               {recentBoards.map((board) => (
                 <button key={board.id} type="button" onClick={() => {
-                  if (board.id !== activeBoardId && hasUnsavedBoardChanges &&
+                  if (hasUnsavedBoardChanges &&
                     !window.confirm('저장하지 않은 일정판 변경사항이 있습니다. 다른 일정판을 열까요?')) return;
-                  if (openBoard(board.id)) navigate('/board');
+                  navigate(`/board/${board.id}`);
                 }}
                   className="bg-white rounded-xl p-5 text-left cursor-pointer border border-line hover:border-teal">
-                  <h3 className="m-0 text-[15px] font-semibold text-teal-deep line-clamp-2">{board.title}</h3>
-                  {(board.tripMeta?.region || board.tripMeta?.startDate) &&
-                    <p className="m-0 mt-2 text-xs text-muted">{[board.tripMeta?.region, board.tripMeta?.startDate].filter(Boolean).join(' · ')}</p>}
-                  <p className="m-0 mt-2 text-xs text-muted">카드 {board.cards.length}개 · 동선 {board.connections.length}개</p>
+                  <h3 className="m-0 text-[length:calc(15px*var(--font-scale))] font-semibold text-teal-deep line-clamp-2">{board.title}</h3>
+                  <p className="m-0 mt-2 text-xs text-muted">{new Date(board.updatedAt).toLocaleString('ko-KR')} 수정 · {board.role === 'owner' ? '소유자' : board.role === 'editor' ? '편집자' : '열람자'}</p>
                   <span className="block mt-4 text-xs text-teal">일정판 다시 열기 →</span>
                 </button>
               ))}

@@ -4,10 +4,12 @@ export interface RegionOption {
   coordinates?: { lat: number; lng: number };
 }
 
+export const SEOUL_COORDINATES = { lat: 37.566, lng: 126.9784 } as const;
+
 // 자주 찾는 국내 여행지는 네트워크 연결 전에도 앞글자·오타 검색이 되도록 둔다.
 // 목록에 없는 국내 지역은 Open-Meteo 지오코딩 검색 결과로 보완한다.
 const localRegions: RegionOption[] = [
-  { name: '서울' }, { name: '부산' }, { name: '대구' }, { name: '인천' },
+  { name: '서울', coordinates: SEOUL_COORDINATES }, { name: '부산' }, { name: '대구' }, { name: '인천' },
   { name: '광주', area: '광주광역시' }, { name: '대전' }, { name: '울산' }, { name: '세종' },
   { name: '수원' }, { name: '성남' }, { name: '용인' }, { name: '고양' },
   { name: '부천' }, { name: '안산' }, { name: '안양' }, { name: '평택' },
@@ -90,7 +92,8 @@ export function findDomesticRegions(query: string, remote: RegionOption[] = []):
     .map((option) => ({ option, rank: score(option, query) }))
     .filter(({ option, rank }) => {
       const key = `${option.name}:${option.area ?? ''}`;
-      const coveredByLocal = option.coordinates && localRegions.some((local) =>
+      // 원격 지오코딩 결과 중 내장 목록과 같은 지역만 걸러낸다. 내장 '서울'(좌표 보유)은 남겨야 한다.
+      const coveredByLocal = !localRegions.includes(option) && option.coordinates && localRegions.some((local) =>
         !local.area && normalize(local.name) === normalize(option.name)
       );
       if (!Number.isFinite(rank) || seen.has(key) || coveredByLocal) return false;

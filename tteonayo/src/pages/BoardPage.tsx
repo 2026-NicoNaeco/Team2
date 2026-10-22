@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import Topbar from '../components/Topbar';
 import BoardTripControls from '../components/BoardTripControls';
 import BoardItinerarySidebar from '../components/BoardItinerarySidebar';
@@ -7,13 +7,29 @@ import { CardDateEditor, CardDetailEditor } from '../components/BoardCardEditors
 import BoardConnectionEditor from '../components/BoardConnectionEditor';
 import BoardTextElement from '../components/BoardTextElement';
 import BoardToolIcon from '../components/BoardToolIcon';
+import BoardShareDialog from '../components/BoardShareDialog';
 import { connectionText } from '../components/boardConnectionText';
-import { connectionNeedsReview, primaryTime } from '../components/boardDisplay';
+import { connectionNeedsReview, placeTimes, primaryTime } from '../components/boardDisplay';
+import { PIN_COLOR } from '../components/mapPinColors';
 import { useTrip } from '../context/TripContext';
-import type { BoardCard } from '../types';
+import { useAuth } from '../context/AuthContext';
+import { BoardApiError, createBoard as createApiBoard, getBoard, updateBoard as updateApiBoard } from '../services/boards';
+import type { BoardApiBoard, BoardApiData, BoardCard } from '../types';
 
 const CARD_WIDTH = 220;
 const cardWidth = (card: BoardCard) => card.kind === 'text' ? card.textWidth ?? 280 : CARD_WIDTH;
+
+function sameBoardValue(left: unknown, right: unknown): boolean {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, nested]) => [key, canonical(nested)]));
+    }
+    return value;
+  };
+  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+}
 
 function safeReservationUrl(value?: string) {
   if (!value) return null;
@@ -83,6 +99,8 @@ function downscaleImage(file: File, maxSize = 900, quality = 0.82): Promise<stri
 
 export default function BoardPage() {
   const navigate = useNavigate();
+  const { boardId } = useParams<{ boardId: string }>();
+  const { user } = useAuth();
   const {
     boardCards: cards,
     moveBoardCard,
@@ -102,28 +120,60 @@ export default function BoardPage() {
     activeBoardId,
     tripMeta,
     tripPlaces,
-    syncStatus,
-    areBoardsSynced,
-    saveBoard,
     createBoard,
+    apiWorkspaceBoardId,
+    loadApiBoard,
+    adoptCreatedBoard,
+    restoreBoardDraft,
   } = useTrip();
 
-  const activeBoard = savedBoards.find((board) => board.id === activeBoardId);
-  const [boardTitle, setBoardTitle] = useState(activeBoard?.title ?? '새 여행 일정');
+  const activeLegacyBoard = savedBoards.find((board) => board.id === activeBoardId);
+  const draftTitleKey = `tteonayo:board-draft-title:${user?.id ?? 'unknown'}`;
+  const [boardTitle, setBoardTitle] = useState(() => activeLegacyBoard?.title ?? localStorage.getItem(draftTitleKey) ?? '새 여행 일정');
+  const [apiBoard, setApiBoard] = useState<BoardApiBoard | null>(null);
+  const [boardLoadError, setBoardLoadError] = useState<BoardApiError | null>(null);
+  const [boardLoadAttempt, setBoardLoadAttempt] = useState(0);
+  const [isSaving, setIsSaving] = useState(false);
+  const savingRef = useRef(false);
   const [saveMessage, setSaveMessage] = useState('');
   const [saveError, setSaveError] = useState('');
   const [uploadError, setUploadError] = useState('');
   const [showPlaces, setShowPlaces] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const savedPlaces = places.filter((place) => savedIds.includes(place.id));
-  const hasUnsavedChanges = activeBoard
-    ? boardTitle.trim() !== activeBoard.title ||
-      JSON.stringify(cards) !== JSON.stringify(activeBoard.cards) ||
-      JSON.stringify(connections) !== JSON.stringify(activeBoard.connections) ||
-      JSON.stringify(tripMeta) !== JSON.stringify(activeBoard.tripMeta ?? { region: '', partySize: 1, totalBudget: null }) ||
-      JSON.stringify(tripPlaces) !== JSON.stringify(activeBoard.tripPlaces ?? tripPlaces)
+  const hasUnsavedChanges = boardId && apiBoard?.id === boardId
+    ? boardTitle.trim() !== apiBoard.title ||
+      !sameBoardValue(cards, apiBoard.data.cards) ||
+      !sameBoardValue(connections, apiBoard.data.connections) ||
+      !sameBoardValue(tripMeta, apiBoard.data.tripMeta ?? { region: '', partySize: 1, totalBudget: null }) ||
+      !sameBoardValue(tripPlaces, apiBoard.data.tripPlaces ?? [])
     : cards.length > 0 || connections.length > 0 || tripPlaces.length > 0 ||
       JSON.stringify(tripMeta) !== JSON.stringify({ region: '', partySize: 1, totalBudget: null });
+
+  useEffect(() => {
+    if (!boardId) {
+      setApiBoard(null);
+      setBoardLoadError(null);
+      if (apiWorkspaceBoardId) restoreBoardDraft();
+      setBoardTitle(localStorage.getItem(draftTitleKey) ?? (apiWorkspaceBoardId ? '새 여행 일정' : activeLegacyBoard?.title) ?? '새 여행 일정');
+      return;
+    }
+    let cancelled = false;
+    setBoardLoadError(null);
+    void getBoard(boardId).then((board) => {
+      if (cancelled) return;
+      loadApiBoard(board);
+      setApiBoard(board);
+      setBoardTitle(board.title);
+      setSaveError('');
+    }).catch((error: unknown) => {
+      if (cancelled) return;
+      setBoardLoadError(error instanceof BoardApiError ? error : new BoardApiError(0, '일정판을 불러오지 못했어요.'));
+    });
+    return () => { cancelled = true; };
+    // The API load is keyed by route and explicit retry, not by workspace edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, boardLoadAttempt]);
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [linkFrom, setLinkFrom] = useState<string | null>(null);
@@ -154,23 +204,54 @@ export default function BoardPage() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isExpanded]);
 
-  const visibleSaveMessage = saveMessage === '서버 저장 중...' && syncStatus === 'synced' && areBoardsSynced
-    ? '서버에 저장했어요.' : saveMessage;
-
-  const saveCurrentBoard = () => {
+  const saveCurrentBoard = async () => {
+    if (savingRef.current || (boardId && apiBoard?.id !== boardId)) return;
+    if (!boardId && activeLegacyBoard) {
+      setSaveError('이전 형식 일정판은 읽기 전용으로 보관 중이에요. 기록함에서 데이터 이전 안내를 확인해 주세요.');
+      return;
+    }
+    const title = boardTitle.trim();
+    if (!title || title.length > 80) {
+      setSaveError('일정판 이름은 1~80자로 입력해주세요.');
+      return;
+    }
+    const data: BoardApiData = { schemaVersion: 1, cards, connections, tripMeta, tripPlaces };
+    savingRef.current = true;
+    setIsSaving(true);
+    setSaveError('');
+    setSaveMessage('서버 저장 중...');
     try {
-      saveBoard(boardTitle);
-      setSaveError('');
-      setSaveMessage('서버 저장 중...');
-    } catch (error) {
-      setSaveError(error instanceof Error ? error.message : '일정판을 저장하지 못했습니다.');
+      if (boardId && apiBoard) {
+        const saved = await updateApiBoard(boardId, apiBoard.version, title, data);
+        setApiBoard(saved);
+      } else {
+        const saved = await createApiBoard(title, data);
+        adoptCreatedBoard(saved.id);
+        setApiBoard(saved);
+        try { localStorage.removeItem(draftTitleKey); } catch { /* Server save succeeded. */ }
+        navigate(`/board/${saved.id}`, { replace: true });
+      }
+      setSaveMessage('서버에 저장했어요.');
+    } catch (error: unknown) {
+      const message = error instanceof BoardApiError && error.status === 409
+        ? '다른 곳에서 수정되었습니다. 새로고침하세요. 현재 편집 내용은 화면에 남아 있어요.'
+        : error instanceof BoardApiError && error.status === 413
+          ? '사진을 포함한 일정판이 8MB를 초과했어요. 사진을 줄인 뒤 다시 저장해 주세요. 현재 편집 내용은 화면에 남아 있어요.'
+          : error instanceof Error ? error.message : '일정판을 저장하지 못했습니다.';
+      setSaveError(message);
+      setSaveMessage('');
+    } finally {
+      savingRef.current = false;
+      setIsSaving(false);
     }
   };
 
   const startNewBoard = () => {
     if (hasUnsavedChanges && !window.confirm('새 일정판을 만들까요? 저장하지 않은 변경사항은 사라집니다.')) return;
     createBoard();
+    navigate('/board');
     setBoardTitle('새 여행 일정');
+    try { localStorage.removeItem(draftTitleKey); } catch { /* Keep the editor usable. */ }
     setSaveMessage('');
     setSaveError('');
     setSelectedConnectionId(null);
@@ -400,12 +481,34 @@ export default function BoardPage() {
     setSelectedConnectionId(null);
   };
 
-  const toolBtn =
-    'inline-flex h-9 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-line bg-white px-2.5 text-xs text-teal-deep cursor-pointer hover:bg-paper transition-colors';
+  const toolBtnBase =
+    'h-9 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-line bg-white px-2.5 text-xs text-teal-deep cursor-pointer hover:bg-paper transition-colors';
+  const toolBtn = `inline-flex ${toolBtnBase}`;
+
+  if (boardId && boardLoadError) {
+    return <>
+      <Topbar title="여행 동선 · 일정판" stamp="" />
+      <div className="flex-1 flex flex-col items-center justify-center gap-4 p-6 text-center">
+        <p role="alert" className="m-0 text-sm text-ink">{boardLoadError.status === 404 ? '일정판을 찾을 수 없어요.' : boardLoadError.message}</p>
+        <div className="flex gap-2">
+          {boardLoadError.status !== 404 && <button type="button" onClick={() => setBoardLoadAttempt((count) => count + 1)}
+            className="rounded-xl border border-line bg-white px-4 py-2 text-sm text-teal-deep cursor-pointer">다시 시도</button>}
+          <button type="button" onClick={() => navigate('/home')}
+            className="rounded-xl border-none bg-teal-deep px-4 py-2 text-sm text-white cursor-pointer">홈으로 이동</button>
+        </div>
+      </div>
+    </>;
+  }
+  if (boardId && apiBoard?.id !== boardId) {
+    return <>
+      <Topbar title="여행 동선 · 일정판" stamp="" />
+      <div role="status" className="flex-1 flex items-center justify-center text-sm text-muted">일정판을 불러오는 중입니다.</div>
+    </>;
+  }
 
   return (
     <>
-      <Topbar title="여행 동선 · 일정판" stamp={linkFrom ? '연결할 카드 선택' : '드래그 앤 편집 모드'} />
+      <Topbar title="여행 동선 · 일정판" stamp={linkFrom ? '연결할 카드를 누르세요' : ''} />
       <input
         ref={fileInputRef}
         type="file"
@@ -417,30 +520,51 @@ export default function BoardPage() {
         ? 'fixed inset-0 z-[1000] overflow-y-auto bg-paper p-4 md:p-6 print:static print:p-0'
         : 'flex-1 overflow-y-auto p-4 md:p-8'}>
         {isExpanded && <h1 className="m-0 mb-4 font-display text-xl font-bold text-ink print:hidden">여행 동선 · 일정판</h1>}
-        <div className="flex flex-wrap items-center gap-2 mb-2 print:hidden">
-          <input
-            aria-label="일정판 이름"
-            value={boardTitle}
-            maxLength={80}
-            onChange={(event) => { setBoardTitle(event.target.value); setSaveMessage(''); setSaveError(''); }}
-            className="min-w-[180px] flex-1 max-w-[360px] rounded-xl border border-line bg-white px-3 py-2 font-display text-[15px] font-semibold text-ink outline-teal"
-          />
-          <button type="button" onClick={saveCurrentBoard} disabled={!boardTitle.trim()}
-            className="rounded-xl bg-teal-deep text-white px-3 py-2 text-xs font-semibold cursor-pointer border-none disabled:opacity-50">
-            기록함에 저장
-          </button>
-          <button type="button" onClick={startNewBoard} className="rounded-xl border border-line bg-white text-teal-deep px-3 py-2 text-xs cursor-pointer">새 일정판</button>
-          <button type="button" onClick={() => navigate('/diary')} className="rounded-xl border border-line bg-white text-teal-deep px-3 py-2 text-xs cursor-pointer">기록함</button>
-          <button type="button" onClick={() => setShareInfoOpen(true)} className="rounded-xl border border-line bg-white text-teal-deep px-3 py-2 text-xs cursor-pointer">공유</button>
-          <span role="status" className="text-xs text-teal-deep">
-            {syncStatus === 'error' ? '서버 저장 실패' : hasUnsavedChanges ? '저장되지 않은 변경사항' : visibleSaveMessage || (activeBoard ? '저장된 일정판' : '새 일정판')}
-          </span>
-          {saveError && <span role="alert" className="text-xs text-pin">{saveError}</span>}
-          {uploadError && <span role="alert" className="text-xs text-pin">{uploadError}</span>}
-        </div>
+        <section className="mb-3 w-full min-w-0 max-w-[1600px] print:hidden">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+            <input
+              aria-label="일정판 이름"
+              title="눌러서 이름 수정"
+              value={boardTitle}
+              maxLength={80}
+              onChange={(event) => {
+                setBoardTitle(event.target.value);
+                if (!boardId) {
+                  try { localStorage.setItem(draftTitleKey, event.target.value); } catch { /* Server draft backup remains. */ }
+                }
+                setSaveMessage(''); setSaveError('');
+              }}
+              className="-ml-2 box-border min-w-0 flex-[1_1_280px] rounded-lg border border-transparent bg-transparent px-2 py-1 font-display text-xl font-bold text-ink outline-none hover:border-line hover:bg-white focus:border-teal focus:bg-white md:text-2xl"
+            />
+            <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+              <span role="status" className="inline-flex items-center gap-1.5 text-xs text-muted">
+                {hasUnsavedChanges && !isSaving && <span aria-hidden="true" className="h-2 w-2 rounded-full bg-[#C77D30]" />}
+                {isSaving ? '서버 저장 중...' : hasUnsavedChanges ? '저장되지 않은 변경사항' : saveMessage || (apiBoard ? '저장된 일정판' : '새 일정판')}
+              </span>
+              <button type="button" onClick={startNewBoard} className="rounded-lg border-none bg-transparent px-2 py-2 text-sm text-ink-soft cursor-pointer hover:bg-white">새 일정판</button>
+              <button type="button" onClick={() => navigate('/diary')} className="rounded-lg border-none bg-transparent px-2 py-2 text-sm text-ink-soft cursor-pointer hover:bg-white">기록함</button>
+              <button type="button" onClick={() => setShareInfoOpen(true)}
+                className="rounded-xl border border-line bg-white px-4 py-2 text-sm text-teal-deep cursor-pointer hover:bg-paper">공유</button>
+              <button type="button" onClick={() => { void saveCurrentBoard(); }} disabled={!boardTitle.trim() || isSaving || apiBoard?.role === 'viewer' || (!boardId && Boolean(activeLegacyBoard))}
+                className="rounded-xl border-none bg-teal-deep px-4 py-2 text-sm font-semibold text-white cursor-pointer hover:bg-teal disabled:opacity-50">
+                일정판 저장
+              </button>
+            </div>
+          </div>
+          {(saveError || uploadError) && <div className="mt-2 flex flex-wrap gap-2">
+            {saveError && <span role="alert" className="text-xs text-pin">{saveError}</span>}
+            {uploadError && <span role="alert" className="text-xs text-pin">{uploadError}</span>}
+          </div>}
+        </section>
+        {!boardId && activeLegacyBoard && <div role="status"
+          className="mb-3 flex w-full min-w-0 max-w-[1600px] flex-wrap items-center justify-between gap-2 rounded-lg border border-[#E8CCAA] bg-[#FFF4E8] px-3 py-1.5 text-xs text-[#805B35] print:hidden">
+          <span>이전 형식 일정판은 보관 중이에요. 새 보드로 저장할 수 없습니다.</span>
+          <button type="button" onClick={() => navigate('/diary')}
+            className="shrink-0 rounded-md border border-[#D9B98F] bg-white px-2.5 py-1 text-xs font-semibold text-[#805B35] cursor-pointer">기록함 보기</button>
+        </div>}
         <BoardTripControls />
-        <div className="flex justify-between items-center mb-2 gap-2 flex-wrap print:hidden">
-          <div className="flex gap-1.5 flex-wrap">
+        <div className="mb-2 flex w-full min-w-0 max-w-[1600px] flex-wrap items-center justify-between gap-x-5 gap-y-2 print:hidden">
+          <div className="flex min-w-0 flex-wrap gap-2">
             <button
               onClick={() => setShowPlaces((value) => !value)}
               className={toolBtn}
@@ -467,6 +591,12 @@ export default function BoardPage() {
             <button type="button" onClick={() => openPhotoPicker(null)} className={toolBtn}>
               <BoardToolIcon name="photo" />사진 추가
             </button>
+          </div>
+          <div className="ml-auto flex min-w-0 flex-wrap justify-end gap-2">
+            <button type="button" onClick={() => setSidebarOpen((value) => !value)} aria-expanded={sidebarOpen}
+              className={`${toolBtnBase} hidden xl:inline-flex`}>{sidebarOpen ? '일정 접기' : '일정 펼치기'}</button>
+            <button type="button" onClick={() => setMobileView((view) => view === 'list' ? 'board' : 'list')}
+              className={`${toolBtnBase} inline-flex xl:hidden`}>{mobileView === 'list' ? '화이트보드 보기' : '날짜별 목록 보기'}</button>
             <button
               onClick={() => setShowPanel((v) => !v)}
               className={`${toolBtn} ${showPanel ? 'bg-paper' : ''}`}
@@ -477,14 +607,14 @@ export default function BoardPage() {
               className={toolBtn}>
               <BoardToolIcon name="expand" />{isExpanded ? '기본 화면' : '화면 크게'}
             </button>
+            {/* PDF 저장: 브라우저 인쇄 대화상자에서 "PDF로 저장" 선택 */}
+            <button type="button"
+              onClick={() => window.print()}
+              className={toolBtn}
+            >
+              <BoardToolIcon name="pdf" />PDF 저장
+            </button>
           </div>
-          {/* PDF 저장: 브라우저 인쇄 대화상자에서 "PDF로 저장" 선택 */}
-          <button type="button"
-            onClick={() => window.print()}
-            className="inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-lg border-none bg-teal-deep px-2.5 text-xs text-white cursor-pointer"
-          >
-            <BoardToolIcon name="pdf" />PDF 저장
-          </button>
         </div>
 
         {showPlaces && (
@@ -515,18 +645,6 @@ export default function BoardPage() {
           </div>
         )}
 
-        <p className="text-[11px] text-[#8B8272] mb-1 print:hidden">
-          {linkFrom
-            ? '연결할 카드를 클릭하세요. 빈 공간을 클릭하면 취소됩니다.'
-            : '카드를 배치하고 연결점을 끌어 동선을 만드세요. 날짜·비용·이동 정보는 필요한 카드와 선에서 편집할 수 있어요.'}
-        </p>
-
-        <div className="mb-2 flex items-center gap-2 print:hidden">
-          <button type="button" onClick={() => setSidebarOpen((value) => !value)} aria-expanded={sidebarOpen}
-            className="hidden xl:inline-flex rounded-lg border border-line bg-white px-2.5 py-1.5 text-xs text-teal-deep cursor-pointer">{sidebarOpen ? '일정 접기' : '일정 펼치기'}</button>
-          <button type="button" onClick={() => setMobileView((view) => view === 'list' ? 'board' : 'list')}
-            className="xl:hidden rounded-lg border border-line bg-white px-2.5 py-1.5 text-xs text-teal-deep cursor-pointer">{mobileView === 'list' ? '화이트보드 보기' : '날짜별 목록 보기'}</button>
-        </div>
         <div className="flex flex-col xl:flex-row gap-3">
           {sidebarOpen && <div className={mobileView === 'board' ? 'hidden xl:block' : 'block'}>
             <BoardItinerarySidebar dates={dates} selectedDate={activeDate} onSelectDate={selectDate}
@@ -537,6 +655,11 @@ export default function BoardPage() {
           <div ref={boardViewportRef} className={`min-w-0 flex-1 bg-white border border-line rounded-2xl overflow-auto print:h-auto print:overflow-visible print:border-0 ${mobileView === 'list' ? 'hidden xl:block' : 'block'} ${
             isExpanded ? 'h-[calc(100dvh-180px)] min-h-[500px]' : 'h-[calc(100dvh-190px)] min-h-[480px]'
           }`}>
+            {(linkFrom || cards.length === 0) && <div className="pointer-events-none sticky left-0 top-0 z-40 h-0 print:hidden">
+              <p className={`absolute left-3 top-3 m-0 rounded-full px-3 py-1.5 text-xs shadow-sm ${linkFrom ? 'bg-pin text-white' : 'bg-paper text-ink-soft'}`}>
+                {linkFrom ? '연결할 카드를 누르세요. 빈 곳을 누르면 취소돼요.' : '장소 불러오기로 카드를 꺼내고, 카드 옆 점을 끌어 동선을 이어 보세요.'}
+              </p>
+            </div>}
             <div
               id="board-canvas"
               ref={canvasRef}
@@ -611,7 +734,7 @@ export default function BoardPage() {
                   <div key={connection.id}>
                     <button type="button" onClick={(event) => { event.stopPropagation(); selectConnection(connection.id); }}
                       aria-label={`${from.title}에서 ${to.title}까지 이동 정보 수정${needsReview ? ', 방문 순서 재확인 필요' : ''}`}
-                      className={`absolute z-20 max-w-[220px] -translate-x-1/2 -translate-y-1/2 truncate rounded-full border bg-white px-2.5 py-1 text-[11px] font-semibold shadow-sm cursor-pointer ${needsReview ? 'border-[#B76A36] text-[#91532B]' : selected ? 'border-pin text-pin' : 'border-teal text-teal-deep'}`}
+                      className={`absolute z-20 max-w-[220px] -translate-x-1/2 -translate-y-1/2 truncate rounded-full border bg-white px-2.5 py-1 text-[length:calc(11px*var(--font-scale))] font-semibold shadow-sm cursor-pointer ${needsReview ? 'border-[#B76A36] text-[#91532B]' : selected ? 'border-pin text-pin' : 'border-teal text-teal-deep'}`}
                       style={{ left: midpointX, top: midpointY, opacity: emphasized ? 1 : 0.45 }}>
                       {connectionText(connection, '이동 정보 추가')}{needsReview && ' · 순서 재확인'}
                     </button>
@@ -639,6 +762,16 @@ export default function BoardPage() {
                   ? `${tripPlace.visitDate === activeDate ? '' : `${tripPlace.visitDate} · `}${orderNumber}번`
                   : card.day.startsWith('DAY') ? card.day : '';
                 const cardTime = tripPlace ? primaryTime(tripPlace, card) : card.time ? `방문 예정 ${card.time}` : '';
+                // 카드에는 번호 배지와 함께 날짜(선택한 날이 아닐 때)·방문/예약 시간을 모두 보여준다.
+                const times = tripPlace ? placeTimes(tripPlace, card) : null;
+                const scheduleText = tripPlace?.status === 'scheduled' && tripPlace.visitDate ? [
+                  tripPlace.visitDate === activeDate ? '' : `${tripPlace.visitDate.slice(5, 7)}/${tripPlace.visitDate.slice(8, 10)}`,
+                  times?.visitTime ? `방문 ${times.visitTime}` : '',
+                  times?.reservationTime ? `예약 ${times.reservationTime}` : '',
+                ].filter(Boolean).join(' · ') : '';
+                const linkedPlace = card.placeId ? places.find((item) => item.id === card.placeId) : undefined;
+                // 장소 카드는 지도 분류 색, 메모 카드는 모래색 띠로 구분한다. 사진 카드는 사진이 구분 역할을 한다.
+                const accent = linkedPlace ? PIN_COLOR[linkedPlace.category] : card.placeId || card.imageUrl ? null : '#D8CDB2';
                 const isSelected = selectedCardId === card.id;
                 const isEmphasized = cardIsOnSelectedDate(card);
                 return (
@@ -655,7 +788,7 @@ export default function BoardPage() {
                       handlePointerDown(e, card.id, card.top, card.left);
                     }}
                     onClick={(event) => { if (!(event.target as HTMLElement).closest('button,input,textarea,select,a,[data-no-drag]')) handleCardClick(card.id); }}
-                    className={`board-card group absolute border select-none transition-shadow ${card.kind === 'text' ? 'rounded-none bg-transparent shadow-none' : 'rounded-xl bg-white'} ${
+                    className={`board-card group absolute border select-none transition-shadow ${isSelected ? 'is-selected' : ''} ${card.kind === 'text' ? 'rounded-none bg-transparent shadow-none' : 'rounded-xl bg-white shadow-[0_1px_3px_rgba(34,48,60,0.08)] hover:shadow-md'} ${
                       draggingId === card.id
                         ? 'shadow-2xl cursor-grabbing z-30'
                         : isSelected ? 'cursor-move z-20' : linkFrom ? 'cursor-pointer z-[2]' : 'cursor-move z-[2]'
@@ -682,8 +815,8 @@ export default function BoardPage() {
                         if (cardPopover?.id === card.id) setCardPopover(null);
                         if (selectedCardId === card.id) setSelectedCardId(null);
                       }}
-                      className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-white border border-line text-[#B7AE97] text-[11px] leading-none shadow-sm hover:text-white hover:bg-pin hover:border-pin transition-colors cursor-pointer"
-                      aria-label="카드 삭제"
+                      className="board-card-delete absolute -top-2 -right-2 z-40 w-6 h-6 rounded-full bg-white border border-line text-muted text-[length:calc(11px*var(--font-scale))] leading-none shadow-sm hover:text-white hover:bg-pin hover:border-pin transition-colors cursor-pointer"
+                      aria-label={`${card.title} 카드 삭제`}
                     >
                       ✕
                     </button>}
@@ -699,38 +832,45 @@ export default function BoardPage() {
                       }}
                       onDelete={() => { removeBoardCard(card.id); setSelectedCardId(null); setEditingTextId(null); }}
                       onResizeStart={(event, side) => startTextResize(event, card, side)} /> : <>
-                    <div className="px-3 pt-3 pb-2 flex items-center gap-2">
+                    {accent && <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1 rounded-l-xl" style={{ background: accent }} />}
+                    <div className="flex items-start gap-2 px-3 pt-3 pb-1.5">
+                      {tripPlace?.status === 'scheduled' && orderNumber > 0
+                        ? <span title={`${orderNumber}번째 방문`} className="mt-px flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-teal-deep text-xs font-bold text-white">{orderNumber}</span>
+                        : <span className="mt-0.5 shrink-0 text-muted"><BoardToolIcon name={card.placeId ? 'place' : card.imageUrl ? 'photo' : 'memo'} /></span>}
                       <h5 onDoubleClick={(event) => { event.stopPropagation(); toggleCardPopover(card.id, 'full'); }}
-                        className="m-0 min-w-0 flex-1 truncate text-sm leading-tight text-teal-deep">{card.title}</h5>
+                        title={card.title}
+                        className="m-0 min-w-0 flex-1 break-words text-[length:calc(15px*var(--font-scale))] font-semibold leading-snug text-ink line-clamp-2">{card.title}</h5>
                       {isSelected && <button type="button" onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => { event.stopPropagation(); toggleCardPopover(card.id, 'full'); }}
-                        className="shrink-0 border-none bg-transparent text-xs text-teal cursor-pointer" aria-label={`${card.title} 수정`}>수정</button>}
+                        className="mt-0.5 shrink-0 border-none bg-transparent text-xs text-teal cursor-pointer" aria-label={`${card.title} 수정`}>수정</button>}
                     </div>
 
-                    {tripPlace && <div className="relative px-3 -mt-1 mb-2 flex flex-wrap items-center gap-1.5">
-                      {tripPlace.status !== 'scheduled' && <span className="rounded bg-paper px-1.5 py-0.5 text-[10px] text-teal-deep">{tripPlace.status === 'unassigned' ? '미분류' : '후보'}</span>}
+                    {tripPlace && <div className="relative mb-1.5 flex flex-wrap items-center gap-1.5 px-3">
+                      {tripPlace.status !== 'scheduled' && <span className="rounded bg-paper px-1.5 py-0.5 text-[length:calc(11px*var(--font-scale))] text-teal-deep">{tripPlace.status === 'unassigned' ? '미분류' : '후보'}</span>}
                       <button type="button" onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => { event.stopPropagation(); toggleCardPopover(card.id, 'date'); }}
-                        className="border-none bg-transparent p-0 text-[11px] font-semibold text-teal-deep cursor-pointer">
-                        {cardDateLabel ? `${cardDateLabel}${cardTime ? ` · ${cardTime}` : ''}` : tripPlace.status === 'scheduled' ? '방문 날짜 수정' : '일정에 추가'}
+                        aria-label={`${card.title} 방문 일정 수정${cardDateLabel ? `: ${cardDateLabel}${cardTime ? ` · ${cardTime}` : ''}` : ''}`}
+                        className="inline-flex items-center gap-1 rounded-md border-none bg-paper px-2 py-0.5 text-xs font-semibold text-teal-deep cursor-pointer hover:bg-sand">
+                        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M6 3.6V6l1.6 1" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>
+                        {tripPlace.status === 'scheduled' ? scheduleText || '시간 추가' : '일정에 추가'}
                       </button>
                       {cardPopover?.id === card.id && cardPopover.kind === 'date' && <CardDateEditor key={`date-${card.id}`} item={tripPlace} card={card} onClose={() => setCardPopover(null)} />}
                     </div>}
-                    {!tripPlace && (card.day.startsWith('DAY') || card.time) && <div className="px-3 -mt-1 mb-2 text-[11px] text-teal-deep font-mono">{[card.day.startsWith('DAY') ? card.day : '', card.time ? `방문 예정 ${card.time}` : ''].filter(Boolean).join(' · ')}</div>}
+                    {!tripPlace && (card.day.startsWith('DAY') || card.time) && <div className="px-3 mb-1.5 text-xs font-semibold text-teal-deep">{[card.day.startsWith('DAY') ? card.day : '', card.time ? `방문 예정 ${card.time}` : ''].filter(Boolean).join(' · ')}</div>}
 
-                    {card.address && <p className="px-3 my-1 truncate text-[11px] text-muted" title={card.address}>{card.address}</p>}
+                    {card.address && <p className="px-3 mt-0.5 mb-2 truncate text-xs text-ink-soft" title={card.address}>{card.address}</p>}
 
                     {card.imageUrl && <div className="h-[90px] bg-sand bg-cover bg-center" style={{ backgroundImage: `url('${card.imageUrl}')` }} />}
 
                     {card.description && <p onDoubleClick={(event) => { event.stopPropagation(); toggleCardPopover(card.id, 'full'); }}
-                      className="px-3 py-2 m-0 text-xs leading-relaxed text-[#8B8272] line-clamp-3">{card.description}</p>}
-                    {tripPlace?.note && tripPlace.note !== card.description && <p className="px-3 py-1 m-0 text-xs text-[#8B8272] line-clamp-2">{tripPlace.note}</p>}
+                      className="px-3 py-2 m-0 text-[length:calc(13px*var(--font-scale))] leading-relaxed text-ink-soft line-clamp-3">{card.description}</p>}
+                    {tripPlace?.note && tripPlace.note !== card.description && <p className="px-3 py-1 m-0 text-[length:calc(13px*var(--font-scale))] text-ink-soft line-clamp-2">{tripPlace.note}</p>}
 
-                    {tripPlace?.cost !== null && tripPlace?.cost !== undefined && <div className="mx-3 mb-1 text-[11px] text-ink-soft">
+                    {tripPlace?.cost !== null && tripPlace?.cost !== undefined && <div className="mx-3 mb-2 text-xs text-ink-soft">
                       예상 비용 · {tripPlace.costBasis === 'per_person' ? '1인' : '일행 전체'} <span className="font-mono tabular-nums">{tripPlace.cost.toLocaleString('ko-KR')}원</span>
                     </div>}
-                    {reservationUrl && <a href={reservationUrl} target="_blank" rel="noopener noreferrer" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} className="mx-3 mb-2 inline-block text-[11px] text-teal-deep underline">예약 확인</a>}
-                    {isSelected && <div className="mx-3 mb-2 flex flex-wrap gap-x-2 gap-y-1 border-t border-line pt-2 text-[11px]">
+                    {reservationUrl && <a href={reservationUrl} target="_blank" rel="noopener noreferrer" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} className="mx-3 mb-2 inline-block text-xs text-teal-deep underline">예약 확인</a>}
+                    {isSelected && <div className="mx-3 mb-2 flex flex-wrap gap-x-3 gap-y-1 border-t border-line pt-2 text-xs">
                       <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); toggleCardPopover(card.id, 'full'); }} className="border-none bg-transparent p-0 text-teal cursor-pointer">{card.description ? '메모 수정' : '+ 메모'}</button>
                       {!card.imageUrl && <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); openPhotoPicker(card.id); }} className="border-none bg-transparent p-0 text-teal cursor-pointer">+ 사진</button>}
                       {tripPlace && <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); toggleCardPopover(card.id, 'cost'); }} className="border-none bg-transparent p-0 text-teal cursor-pointer">{tripPlace.cost === null || tripPlace.cost === undefined ? '+ 비용' : '비용 수정'}</button>}
@@ -756,12 +896,12 @@ export default function BoardPage() {
           {showPanel && !cardPopover && (
             <aside className="w-full xl:w-[260px] shrink-0 flex flex-col gap-4 print:hidden">
               <div className="bg-white border border-line rounded-2xl px-4 py-4">
-                <h4 className="m-0 mb-3 text-[13px] font-display font-semibold text-teal-deep">카드 목록 ({cards.length})</h4>
+                <h4 className="m-0 mb-3 text-[length:calc(13px*var(--font-scale))] font-display font-semibold text-teal-deep">카드 목록 ({cards.length})</h4>
                 {cards.length ? (
                   <div className="flex flex-col gap-2">
                     {cards.map((card) => (
                       <div key={card.id} className="flex items-center gap-2 text-xs text-ink-soft">
-                        <span className="text-[10px] text-muted">{card.placeId ? '장소' : card.imageUrl ? '사진' : card.kind === 'text' ? '텍스트' : '메모'}</span>
+                        <span className="text-[length:calc(10px*var(--font-scale))] text-muted">{card.placeId ? '장소' : card.imageUrl ? '사진' : card.kind === 'text' ? '텍스트' : '메모'}</span>
                         <span className="truncate flex-1">{card.kind === 'text' ? card.description || '빈 텍스트' : card.title}</span>
                         <button type="button" onClick={() => removeBoardCard(card.id)} aria-label="카드 삭제"
                           className="text-pin bg-transparent border-none cursor-pointer">✕</button>
@@ -780,20 +920,14 @@ export default function BoardPage() {
               )}
               <div className="bg-white border border-line rounded-2xl px-4 py-4">
                 <h4 className="m-0 mb-2 text-xs font-semibold text-teal-deep">친구와 공동 편집</h4>
-                <p className="m-0 text-xs leading-relaxed text-muted">일정판은 로그인 계정의 서버에 저장됩니다. 친구와 함께 수정하는 공유 링크·참여자 권한은 아직 연결되지 않았습니다.</p>
+                <p className="m-0 text-xs leading-relaxed text-muted">저장한 일정판은 공유 메뉴에서 가입한 친구를 편집자로 추가할 수 있어요.</p>
               </div>
             </aside>
           )}
         </div>
       </div>
 
-      {shareInfoOpen && <div className="fixed inset-0 z-[2100] flex items-center justify-center bg-black/30 p-4 print:hidden" onClick={() => setShareInfoOpen(false)}>
-        <div role="dialog" aria-modal="true" aria-label="공유 안내" className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl" onClick={(event) => event.stopPropagation()}>
-          <h2 className="m-0 text-base font-semibold text-teal-deep">일정판 공유</h2>
-          <p className="my-3 text-sm text-ink-soft">공유 링크와 참여자 권한은 아직 연결되지 않았습니다. 현재 로그인한 계정에서만 이 일정판을 열고 수정할 수 있어요.</p>
-          <button type="button" onClick={() => setShareInfoOpen(false)} className="rounded-lg border-none bg-teal-deep px-3 py-2 text-xs text-white cursor-pointer">확인</button>
-        </div>
-      </div>}
+      {shareInfoOpen && <BoardShareDialog boardId={boardId} onClose={() => setShareInfoOpen(false)} />}
 
     </>
   );

@@ -9,7 +9,7 @@ export interface Trip {
 
 export interface Place {
   id: string;
-  source?: 'openstreetmap' | 'kakao' | 'manual';
+  source?: 'openstreetmap' | 'kakao' | 'naver' | 'manual';
   sourceId?: string;
   name: string;
   category: '카페' | '관광지' | '맛집' | '숙소';
@@ -25,6 +25,7 @@ export interface ChatMessage {
   sender: 'ai' | 'user';
   text: string;
   createdAt?: string;
+  sources?: { title: string; url: string }[];
   // AI가 제안하는 추천 코스 — 각 장소를 "다이어리(일정판)"로 보낼 수 있음
   course?: { placeId: string; time: string }[];
 }
@@ -93,6 +94,41 @@ export interface SavedBoard {
   tripMeta?: TripMeta;
   tripPlaces?: TripPlace[];
 }
+
+export interface BoardApiData {
+  schemaVersion: 1;
+  cards: BoardCard[];
+  connections: BoardConnection[];
+  tripMeta?: TripMeta;
+  tripPlaces?: TripPlace[];
+}
+
+export type BoardRole = 'owner' | 'editor' | 'viewer';
+
+export interface BoardApiMember {
+  userId: number;
+  nickname: string;
+  role: BoardRole;
+}
+
+export interface BoardApiSummary {
+  id: string;
+  ownerId: number;
+  title: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  role: BoardRole;
+  legacyBoardId?: string | null;
+}
+
+export interface BoardApiBoard extends BoardApiSummary {
+  data: BoardApiData;
+  members: BoardApiMember[];
+}
+
+export interface BoardApiResponse { board: BoardApiBoard }
+export interface BoardListResponse { boards: BoardApiSummary[] }
 
 export interface TripMeta {
   region: string;

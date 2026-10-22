@@ -5,6 +5,9 @@ import {
 } from '../data/mockData';
 import type { BoardCard, BoardConnection, ChatConversation, DiaryFolder, DiaryNote, Place, SavedBoard, TripMeta, TripPlace } from '../types';
 import { useAuth } from './AuthContext';
+import { API_BASE_URL } from '../services/apiBase';
+import { useLocation } from 'react-router-dom';
+import type { BoardApiBoard } from '../types';
 
 // 지도 · AI채팅 · 일정판 · 기록함이 공유하는 여행 데이터.
 // 기획서의 "기록 → AI 분석 → 다음 여행 계획" 흐름을 위해 한 곳에서 관리하고,
@@ -13,7 +16,6 @@ import { useAuth } from './AuthContext';
 interface TripContextValue {
   syncError: string;
   syncStatus: 'loading' | 'synced' | 'pending' | 'saving' | 'error';
-  areBoardsSynced: boolean;
   retrySync: () => void;
   places: Place[];
   addPlace: (place: Omit<Place, 'id'>) => Place;
@@ -50,6 +52,10 @@ interface TripContextValue {
   openBoard: (id: string) => boolean;
   createBoard: () => void;
   deleteBoard: (id: string) => void;
+  apiWorkspaceBoardId: string | null;
+  loadApiBoard: (board: BoardApiBoard) => void;
+  adoptCreatedBoard: (id: string) => void;
+  restoreBoardDraft: () => void;
 
   diaryFolders: DiaryFolder[];
   diaryNotes: DiaryNote[];
@@ -91,6 +97,24 @@ interface Persisted {
   chatConversations?: ChatConversation[];
 }
 
+// PostgreSQL jsonb는 객체의 키 순서를 바꿀 수 있다. 동기화 비교에서는 키 순서를 무시한다.
+function stableStringify(value: unknown): string {
+  const canonical = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(canonical);
+    if (item !== null && typeof item === 'object') {
+      return Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, nested]) => [key, canonical(nested)]));
+    }
+    return item;
+  };
+  return JSON.stringify(canonical(value));
+}
+
+function storedFingerprint(raw: string | null): string | null {
+  if (!raw) return null;
+  try { return stableStringify(JSON.parse(raw)); } catch { return raw; }
+}
+
 const emptyTripMeta = (): TripMeta => ({ region: '', partySize: 1, totalBudget: null });
 
 function placesFromLegacyCards(cards: BoardCard[], places: Place[]): TripPlace[] {
@@ -110,7 +134,7 @@ interface ServerState { version: number; data: Persisted | null }
 async function travelRequest(path: string, method = 'GET', body?: object): Promise<ServerState> {
   const token = localStorage.getItem('token');
   if (!token) throw new Error('다시 로그인해 주세요.');
-  const response = await fetch(`http://localhost:4000/api/travel/${path}`, {
+  const response = await fetch(`${API_BASE_URL}/api/travel/${path}`, {
     method,
     headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
@@ -179,6 +203,7 @@ function persistBoardList(key: string, boards: SavedBoard[], activeId: string | 
 
 export function TripProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
+  const location = useLocation();
   if (!user) throw new Error('여행 데이터는 로그인 후 이용할 수 있어요.');
   const key = storageKey(user.id);
   const syncHashKey = `${key}:server-copy`;
@@ -199,9 +224,17 @@ export function TripProvider({ children }: { children: ReactNode }) {
   const [connections, setConnections] = useState<BoardConnection[]>(persisted.connections ?? []);
   const [savedBoards, setSavedBoards] = useState<SavedBoard[]>(persisted.savedBoards ?? []);
   const [activeBoardId, setActiveBoardId] = useState<string | null>(persisted.activeBoardId ?? null);
+  const [apiWorkspaceBoardId, setApiWorkspaceBoardId] = useState<string | null>(null);
   const [tripMeta, setTripMeta] = useState<TripMeta>(persisted.activeTripMeta ?? emptyTripMeta());
   const [tripPlaces, setTripPlaces] = useState<TripPlace[]>(persisted.activeTripPlaces ??
     placesFromLegacyCards(persisted.boardCards ?? [], places));
+  const boardDraft = useRef({
+    cards: persisted.boardCards ?? [] as BoardCard[],
+    connections: persisted.connections ?? [] as BoardConnection[],
+    tripMeta: persisted.activeTripMeta ?? emptyTripMeta(),
+    tripPlaces: persisted.activeTripPlaces ?? placesFromLegacyCards(persisted.boardCards ?? [], places),
+    activeBoardId: persisted.activeBoardId ?? null,
+  });
   const [diaryFolders, setDiaryFolders] = useState<DiaryFolder[]>(
     persisted.diaryFolders ?? seedFolders
   );
@@ -225,15 +258,15 @@ export function TripProvider({ children }: { children: ReactNode }) {
     const load = async () => {
       try {
         const localData = persisted;
-        const localJson = JSON.stringify(localData);
+        const localJson = stableStringify(localData);
         const hasLocalData = Object.keys(localData).length > 0;
         const remote = await travelRequest('state');
         if (cancelled) return;
         let result = remote;
-        if (remote.data && hasLocalData && JSON.stringify(remote.data) !== localJson) {
-          const knownCopy = localStorage.getItem(syncHashKey);
+        if (remote.data && hasLocalData && stableStringify(remote.data) !== localJson) {
+          const knownCopy = storedFingerprint(localStorage.getItem(syncHashKey));
           if (knownCopy !== localJson) {
-            if (knownCopy === JSON.stringify(remote.data) && Number(localStorage.getItem(syncVersionKey)) === remote.version) {
+            if (knownCopy === stableStringify(remote.data) && Number(localStorage.getItem(syncVersionKey)) === remote.version) {
               result = await travelRequest('state', 'PUT', { version: remote.version, data: localData });
               if (cancelled) return;
             } else {
@@ -253,7 +286,7 @@ export function TripProvider({ children }: { children: ReactNode }) {
         }
         const data = result.data ?? localData;
         serverVersion.current = result.version;
-        lastSynced.current = JSON.stringify(data);
+        lastSynced.current = stableStringify(data);
         try {
           localStorage.setItem(syncHashKey, lastSynced.current);
           localStorage.setItem(syncVersionKey, String(result.version));
@@ -274,6 +307,13 @@ export function TripProvider({ children }: { children: ReactNode }) {
         setTripMeta(data.activeTripMeta ?? emptyTripMeta());
         setTripPlaces(data.activeTripPlaces ?? placesFromLegacyCards(data.boardCards ?? [],
           [...seedPlaces, ...(data.customPlaces ?? [])]));
+        boardDraft.current = {
+          cards: data.boardCards ?? [], connections: data.connections ?? [],
+          tripMeta: data.activeTripMeta ?? emptyTripMeta(),
+          tripPlaces: data.activeTripPlaces ?? placesFromLegacyCards(data.boardCards ?? [],
+            [...seedPlaces, ...(data.customPlaces ?? [])]),
+          activeBoardId: data.activeBoardId ?? null,
+        };
         setDiaryFolders(data.diaryFolders ?? seedFolders);
         setDiaryNotes(data.diaryNotes ?? []);
         setChatConversations(data.chatConversations ?? []);
@@ -288,6 +328,11 @@ export function TripProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, [key, persisted, syncHashKey, syncVersionKey, loadAttempt]);
 
+  useEffect(() => {
+    if (apiWorkspaceBoardId || /^\/board\/[^/]+$/.test(location.pathname)) return;
+    boardDraft.current = { cards: boardCards, connections, tripMeta, tripPlaces, activeBoardId };
+  }, [apiWorkspaceBoardId, location.pathname, boardCards, connections, tripMeta, tripPlaces, activeBoardId]);
+
   const flush = useCallback(async () => {
     if (sending.current || blocked.current || !pending.current) return;
     sending.current = true;
@@ -299,7 +344,7 @@ export function TripProvider({ children }: { children: ReactNode }) {
         try {
           const result = await travelRequest('state', 'PUT', { version: serverVersion.current, data });
           serverVersion.current = result.version;
-          lastSynced.current = JSON.stringify(data);
+          lastSynced.current = stableStringify(data);
           let backupFailed = false;
           try {
             localStorage.setItem(syncHashKey, lastSynced.current);
@@ -338,14 +383,14 @@ export function TripProvider({ children }: { children: ReactNode }) {
         deletedPlaceIds,
         savedIds,
         memos,
-        boardCards,
-        connections,
+        boardCards: apiWorkspaceBoardId || /^\/board\/[^/]+$/.test(location.pathname) ? boardDraft.current.cards : boardCards,
+        connections: apiWorkspaceBoardId || /^\/board\/[^/]+$/.test(location.pathname) ? boardDraft.current.connections : connections,
         diaryFolders,
         diaryNotes,
         savedBoards,
-        activeBoardId,
-        activeTripMeta: tripMeta,
-        activeTripPlaces: tripPlaces,
+        activeBoardId: apiWorkspaceBoardId || /^\/board\/[^/]+$/.test(location.pathname) ? boardDraft.current.activeBoardId : activeBoardId,
+        activeTripMeta: apiWorkspaceBoardId || /^\/board\/[^/]+$/.test(location.pathname) ? boardDraft.current.tripMeta : tripMeta,
+        activeTripPlaces: apiWorkspaceBoardId || /^\/board\/[^/]+$/.test(location.pathname) ? boardDraft.current.tripPlaces : tripPlaces,
         chatConversations,
       };
       try {
@@ -353,7 +398,7 @@ export function TripProvider({ children }: { children: ReactNode }) {
       } catch {
         setSyncError('브라우저에 백업을 저장하지 못했습니다. 저장 공간을 확인해주세요.');
       }
-      if (JSON.stringify(data) !== lastSynced.current) {
+      if (stableStringify(data) !== lastSynced.current) {
         pending.current = data;
         if (!blocked.current) {
           setSyncStatus('pending');
@@ -362,19 +407,13 @@ export function TripProvider({ children }: { children: ReactNode }) {
       }
     }, 350);
     return () => clearTimeout(t);
-  }, [serverReady, key, places, deletedPlaceIds, savedIds, memos, boardCards, connections, diaryFolders, diaryNotes, savedBoards, activeBoardId, tripMeta, tripPlaces, chatConversations, flush]);
+  }, [serverReady, key, places, deletedPlaceIds, savedIds, memos, boardCards, connections, diaryFolders, diaryNotes, savedBoards, activeBoardId, tripMeta, tripPlaces, chatConversations, flush, apiWorkspaceBoardId, location.pathname]);
 
   const logActivity = (msg: string) => setActivityLog((prev) => [msg, ...prev].slice(0, 6));
 
   const value: TripContextValue = {
     syncError,
     syncStatus,
-    areBoardsSynced: (() => {
-      try {
-        const serverCopy = JSON.parse(lastSynced.current) as Persisted;
-        return JSON.stringify(serverCopy.savedBoards ?? []) === JSON.stringify(savedBoards);
-      } catch { return false; }
-    })(),
     retrySync: () => { if (blocked.current) window.location.reload(); else void flush(); },
     places,
     addPlace: (input) => {
@@ -519,12 +558,12 @@ export function TripProvider({ children }: { children: ReactNode }) {
     hasUnsavedBoardChanges: (() => {
       const current = savedBoards.find((board) => board.id === activeBoardId);
       return current
-        ? JSON.stringify(boardCards) !== JSON.stringify(current.cards) ||
-            JSON.stringify(connections) !== JSON.stringify(current.connections) ||
-            JSON.stringify(tripMeta) !== JSON.stringify(current.tripMeta ?? emptyTripMeta()) ||
-            JSON.stringify(tripPlaces) !== JSON.stringify(current.tripPlaces ?? placesFromLegacyCards(current.cards, places))
+        ? stableStringify(boardCards) !== stableStringify(current.cards) ||
+            stableStringify(connections) !== stableStringify(current.connections) ||
+            stableStringify(tripMeta) !== stableStringify(current.tripMeta ?? emptyTripMeta()) ||
+            stableStringify(tripPlaces) !== stableStringify(current.tripPlaces ?? placesFromLegacyCards(current.cards, places))
         : boardCards.length > 0 || connections.length > 0 || tripPlaces.length > 0 ||
-          JSON.stringify(tripMeta) !== JSON.stringify(emptyTripMeta());
+          stableStringify(tripMeta) !== stableStringify(emptyTripMeta());
     })(),
     saveBoard: (title) => {
       const cleanTitle = title.trim();
@@ -579,6 +618,10 @@ export function TripProvider({ children }: { children: ReactNode }) {
     openBoard: (id) => {
       const board = savedBoards.find((item) => item.id === id);
       if (!board) return false;
+      setApiWorkspaceBoardId(null);
+      boardDraft.current = { cards: board.cards, connections: board.connections,
+        tripMeta: board.tripMeta ?? emptyTripMeta(),
+        tripPlaces: board.tripPlaces ?? placesFromLegacyCards(board.cards, places), activeBoardId: id };
       setBoardCards(board.cards.map((card) => ({ ...card })));
       setConnections(board.connections.map((connection) => ({ ...connection })));
       setActiveBoardId(id);
@@ -592,6 +635,8 @@ export function TripProvider({ children }: { children: ReactNode }) {
       setActiveBoardId(null);
       setTripMeta(emptyTripMeta());
       setTripPlaces([]);
+      setApiWorkspaceBoardId(null);
+      boardDraft.current = { cards: [], connections: [], tripMeta: emptyTripMeta(), tripPlaces: [], activeBoardId: null };
     },
     deleteBoard: (id) => {
       const next = savedBoards.filter((item) => item.id !== id);
@@ -605,6 +650,32 @@ export function TripProvider({ children }: { children: ReactNode }) {
         setTripMeta(emptyTripMeta());
         setTripPlaces([]);
       }
+    },
+
+    apiWorkspaceBoardId,
+    loadApiBoard: (board) => {
+      if (!apiWorkspaceBoardId) {
+        boardDraft.current = { cards: boardCards, connections, tripMeta, tripPlaces, activeBoardId };
+      }
+      setApiWorkspaceBoardId(board.id);
+      setBoardCards(board.data.cards.map((card) => ({ ...card })));
+      setConnections(board.data.connections.map((connection) => ({ ...connection })));
+      setTripMeta(board.data.tripMeta ?? emptyTripMeta());
+      setTripPlaces(board.data.tripPlaces ?? []);
+    },
+    adoptCreatedBoard: (id) => {
+      boardDraft.current = { cards: [], connections: [], tripMeta: emptyTripMeta(), tripPlaces: [], activeBoardId: null };
+      setApiWorkspaceBoardId(id);
+      setActiveBoardId(null);
+    },
+    restoreBoardDraft: () => {
+      const draft = boardDraft.current;
+      setApiWorkspaceBoardId(null);
+      setBoardCards(draft.cards);
+      setConnections(draft.connections);
+      setTripMeta(draft.tripMeta);
+      setTripPlaces(draft.tripPlaces);
+      setActiveBoardId(draft.activeBoardId);
     },
 
     diaryFolders,
@@ -660,7 +731,7 @@ export function TripProvider({ children }: { children: ReactNode }) {
         setBackupDownloaded(true);
       }} className="rounded-lg border border-line bg-white px-4 py-2 text-teal-deep">브라우저 데이터 백업</button>
       <button type="button" disabled={!backupDownloaded} onClick={() => {
-        localStorage.setItem(syncHashKey, JSON.stringify(persisted));
+        localStorage.setItem(syncHashKey, stableStringify(persisted));
         setLoadAttempt((attempt) => attempt + 1);
       }} className="rounded-lg border border-line bg-white px-4 py-2 text-teal-deep disabled:opacity-50">백업 후 서버 데이터 열기</button>
       <p className="m-0 text-xs text-muted">서버 데이터를 열면 이 브라우저의 다른 내용은 다운로드한 백업 파일에만 남습니다.</p>

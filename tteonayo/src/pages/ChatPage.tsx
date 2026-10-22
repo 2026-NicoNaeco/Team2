@@ -4,12 +4,19 @@ import Topbar from '../components/Topbar';
 import { useTrip } from '../context/TripContext';
 import { fetchRegionWeather, type RegionWeather } from '../services/weather';
 import { findDomesticRegions, searchDomesticRegions, type RegionOption } from '../services/domesticRegions';
+import { requestTravelReply } from '../services/travelChat';
+import { fetchSeoulCongestion, type SeoulCongestionResponse } from '../services/seoulCongestion';
 import type { ChatConversation, ChatMessage } from '../types';
 
 type WeatherState =
   | { status: 'idle' | 'loading' }
-  | { status: 'success'; value: RegionWeather }
+  | { status: 'success'; region: string; value: RegionWeather }
   | { status: 'error'; message: string };
+
+type CongestionState =
+  | { status: 'idle' }
+  | { status: 'success'; place: string; value: SeoulCongestionResponse }
+  | { status: 'error'; place: string; message: string };
 
 export default function ChatPage() {
   const navigate = useNavigate();
@@ -24,8 +31,22 @@ export default function ChatPage() {
   const [showNewForm, setShowNewForm] = useState(false);
   const [input, setInput] = useState('');
   const [weather, setWeather] = useState<WeatherState>({ status: 'idle' });
+  const [congestionCatalog, setCongestionCatalog] = useState<
+    { status: 'idle' } | { status: 'success'; value: SeoulCongestionResponse } | { status: 'error'; message: string }
+  >({ status: 'idle' });
+  const [congestion, setCongestion] = useState<CongestionState>({ status: 'idle' });
+  const [selectedPlaceByChat, setSelectedPlaceByChat] = useState<Record<string, string>>({});
+  const [pendingConversationId, setPendingConversationId] = useState<string | null>(null);
+  const [replyError, setReplyError] = useState<{ conversationId: string; message: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const active = conversations.find((item) => item.id === selectedId) ?? null;
+  const availablePlaces = congestionCatalog.status === 'success' ? congestionCatalog.value.availablePlaces : [];
+  const mentionedPlace = active?.region === '서울' ? [...active.messages].reverse()
+    .filter((message) => message.sender === 'user')
+    .map((message) => availablePlaces.find((place) => message.text.includes(place)))
+    .find(Boolean) : undefined;
+  const focusedPlace = active?.region === '서울' ? selectedPlaceByChat[active.id] || mentionedPlace || '' : '';
+  const sending = pendingConversationId !== null;
   const ordered = [...conversations].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const regionQuery = newRegion.trim();
   const suggestions = useMemo(() => findDomesticRegions(
@@ -63,17 +84,40 @@ export default function ChatPage() {
     }
     const controller = new AbortController();
     setWeather({ status: 'loading' });
-    fetchRegionWeather(active.region, controller.signal, {
+    const weatherRegion = active.region;
+    fetchRegionWeather(weatherRegion, controller.signal, {
       countryCode: active.regionCountryCode,
       coordinates: active.regionCoordinates,
     })
-      .then((value) => setWeather({ status: 'success', value }))
+      .then((value) => setWeather({ status: 'success', region: weatherRegion, value }))
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
         setWeather({ status: 'error', message: error instanceof Error ? error.message : '날씨를 불러오지 못했습니다.' });
       });
     return () => controller.abort();
   }, [active?.region, active?.regionCountryCode, active?.regionCoordinates]);
+
+  useEffect(() => {
+    if (active?.region !== '서울') return;
+    const controller = new AbortController();
+    fetchSeoulCongestion(null, controller.signal)
+      .then((value) => { if (!controller.signal.aborted) setCongestionCatalog({ status: 'success', value }); })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) setCongestionCatalog({ status: 'error', message: error instanceof Error ? error.message : '관광지 목록을 불러오지 못했어요.' });
+      });
+    return () => controller.abort();
+  }, [active?.region]);
+
+  useEffect(() => {
+    if (!focusedPlace) return;
+    const controller = new AbortController();
+    fetchSeoulCongestion(focusedPlace, controller.signal)
+      .then((value) => { if (!controller.signal.aborted) setCongestion({ status: 'success', place: focusedPlace, value }); })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) setCongestion({ status: 'error', place: focusedPlace, message: error instanceof Error ? error.message : '혼잡도를 불러오지 못했어요.' });
+      });
+    return () => controller.abort();
+  }, [focusedPlace]);
 
   const chooseRegion = (option: RegionOption) => {
     setNewRegion(option.name);
@@ -109,9 +153,33 @@ export default function ChatPage() {
     if (selectedId === id) setSelectedId(next[0]?.id ?? null);
   };
 
+  const askGuide = async (conversation: ChatConversation, messages: ChatMessage[]) => {
+    setPendingConversationId(conversation.id);
+    setReplyError(null);
+    try {
+      const result = await requestTravelReply({
+        region: conversation.region, messages,
+        weather: weather.status === 'success' && weather.region === conversation.region ? weather.value : undefined,
+      });
+      const now = new Date().toISOString();
+      const reply: ChatMessage = { id: crypto.randomUUID(), sender: 'ai', text: result.answer, sources: result.sources, createdAt: now };
+      setConversations((previous) => previous.map((item) => item.id === conversation.id
+        ? { ...item, messages: [...item.messages, reply], updatedAt: now }
+        : item
+      ));
+    } catch (error) {
+      setReplyError({ conversationId: conversation.id,
+        message: error instanceof Error ? error.message : 'AI 답변을 불러오지 못했어요.' });
+    } finally {
+      setPendingConversationId(null);
+    }
+  };
+
   const sendMessage = () => {
     const text = input.trim();
-    if (!active || !text || text.length > 2000) return;
+    if (!active || !text || text.length > 2000 || sending) return;
+    const placeInMessage = active.region === '서울' ? availablePlaces.find((place) => text.includes(place)) : undefined;
+    if (placeInMessage) setSelectedPlaceByChat((previous) => ({ ...previous, [active.id]: placeInMessage }));
     const now = new Date().toISOString();
     const message: ChatMessage = { id: crypto.randomUUID(), sender: 'user', text, createdAt: now };
     setConversations((previous) => previous.map((item) => item.id === active.id
@@ -119,6 +187,12 @@ export default function ChatPage() {
       : item
     ));
     setInput('');
+    void askGuide(active, [...active.messages, message]);
+  };
+
+  const retryReply = () => {
+    if (!active || sending || active.messages.at(-1)?.sender !== 'user') return;
+    void askGuide(active, active.messages);
   };
 
   return (
@@ -182,12 +256,12 @@ export default function ChatPage() {
                     )}
                   </div>
                 )}
-                <p className="m-0 text-[11px] text-muted">목록에서 지역을 선택하면 대화를 만들 수 있어요.</p>
+                <p className="m-0 text-[length:calc(11px*var(--font-scale))] text-muted">목록에서 지역을 선택하면 대화를 만들 수 있어요.</p>
                 <button type="submit" disabled={!selectedRegion || selectedRegion.name !== newRegion.trim()}
                   className="rounded-lg bg-teal text-white py-2 text-xs cursor-pointer border-none disabled:opacity-50">대화 만들기</button>
               </form>
             )}
-            <div className="text-[11px] font-semibold text-muted px-2">이전 대화 · {conversations.length}개</div>
+            <div className="text-[length:calc(11px*var(--font-scale))] font-semibold text-muted px-2">이전 대화 · {conversations.length}개</div>
             {ordered.length ? (
               <div className="flex lg:flex-col gap-1 overflow-x-auto lg:overflow-y-auto lg:min-h-0">
                 {ordered.map((conversation) => (
@@ -195,7 +269,7 @@ export default function ChatPage() {
                     <button type="button" onClick={() => { setSelectedId(conversation.id); setInput(''); }}
                       className="min-w-0 flex-1 bg-transparent border-none text-left px-3 py-2.5 cursor-pointer">
                       <span className="block truncate text-sm font-semibold text-teal-deep">{conversation.title}</span>
-                      <span className="block truncate mt-1 text-[11px] text-muted">{conversation.messages.at(-1)?.text ?? '아직 대화가 없어요'}</span>
+                      <span className="block truncate mt-1 text-[length:calc(11px*var(--font-scale))] text-muted">{conversation.messages.at(-1)?.text ?? '아직 대화가 없어요'}</span>
                     </button>
                     <button type="button" onClick={() => deleteConversation(conversation.id)} aria-label={`${conversation.title} 삭제`}
                       className="shrink-0 mr-2 text-muted hover:text-pin bg-transparent border-none cursor-pointer">✕</button>
@@ -203,37 +277,52 @@ export default function ChatPage() {
                 ))}
               </div>
             ) : <p className="m-0 px-2 text-xs text-muted">새 지역 대화를 만들어 시작하세요.</p>}
-            <p className="mt-auto m-0 px-2 text-[11px] leading-relaxed text-muted">대화 기록은 현재 이 브라우저에 저장됩니다.</p>
+            <p className="mt-auto m-0 px-2 text-[length:calc(11px*var(--font-scale))] leading-relaxed text-muted">대화 기록은 로그인 계정에 저장됩니다.</p>
           </aside>
 
           <main className="min-w-0 flex-1 min-h-[360px] lg:min-h-0 bg-white border border-line rounded-2xl flex flex-col overflow-hidden">
             {active ? (
               <>
                 <div className="shrink-0 border-b border-line px-5 py-4 bg-paper">
-                  <h1 className="m-0 font-display text-[18px] font-semibold text-ink">{active.title}</h1>
-                  <p className="m-0 mt-1 text-xs text-muted">지역: {active.region} · AI 답변 기능은 서버 연결 전입니다</p>
+                  <h1 className="m-0 font-display text-[length:calc(18px*var(--font-scale))] font-semibold text-ink">{active.title}</h1>
+                  <p className="m-0 mt-1 text-xs text-muted">지역: {active.region} · 여행 가이드 AI</p>
                 </div>
                 <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-5 sm:px-6 flex flex-col gap-4">
                   <div className="self-start max-w-[85%] rounded-2xl rounded-bl-sm bg-paper border border-line px-4 py-3 text-sm leading-relaxed text-ink-soft">
-                    {active.region} 여행에 관해 궁금한 점을 적어두세요. 현재 질문은 이 브라우저에 저장되며, AI 답변은 연결 후 이용할 수 있습니다.
+                    {active.region} 여행에 관해 물어보세요. 확인되지 않은 가격이나 이동시간은 사실처럼 답하지 않아요.
                   </div>
                   {active.messages.map((message) => (
                     <div key={message.id} className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap break-words ${message.sender === 'user' ? 'self-end rounded-br-sm bg-teal-deep text-white' : 'self-start rounded-bl-sm bg-paper border border-line text-ink-soft'}`}>
                       {message.text}
+                      {message.sender === 'ai' && Boolean(message.sources?.length) && <div className="mt-3 border-t border-line pt-2 text-xs">
+                        <span className="text-muted">검색 출처</span>
+                        <ul className="m-0 mt-1 list-none p-0 flex flex-col gap-1">
+                          {message.sources?.map((source) => <li key={source.url}>
+                            <a href={source.url} target="_blank" rel="noopener noreferrer" className="text-teal-deep underline break-all">{source.title}</a>
+                          </li>)}
+                        </ul>
+                      </div>}
                     </div>
                   ))}
+                  {pendingConversationId === active.id && <p className="self-start m-0 text-xs text-muted" role="status">답변을 작성하는 중이에요…</p>}
                 </div>
                 <div className="shrink-0 border-t border-line p-3 sm:p-4 bg-white">
+                  {replyError?.conversationId === active.id && <div role="alert" className="mb-3 flex items-center justify-between gap-3 text-xs text-pin">
+                    <span>{replyError.message}</span>
+                    {active.messages.at(-1)?.sender === 'user' &&
+                      <button type="button" onClick={retryReply} disabled={sending}
+                        className="shrink-0 rounded-lg border border-line bg-white px-2 py-1 text-teal-deep cursor-pointer disabled:opacity-50">답변 다시 받기</button>}
+                  </div>}
                   <div className="flex items-end gap-2">
                     <textarea value={input} maxLength={2000} rows={2}
                       onChange={(event) => setInput(event.target.value)}
                       onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }}
                       placeholder={`${active.region} 여행에 대한 질문을 적어보세요`}
                       className="min-w-0 flex-1 resize-none rounded-xl border border-line px-3.5 py-2.5 text-sm leading-relaxed outline-teal" />
-                    <button type="button" onClick={sendMessage} disabled={!input.trim()}
-                      className="shrink-0 rounded-xl bg-teal-deep text-white px-4 py-3 text-sm font-semibold cursor-pointer border-none disabled:opacity-50">저장</button>
+                    <button type="button" onClick={sendMessage} disabled={!input.trim() || sending}
+                      className="shrink-0 rounded-xl bg-teal-deep text-white px-4 py-3 text-sm font-semibold cursor-pointer border-none disabled:opacity-50">{sending ? '답변 중' : '보내기'}</button>
                   </div>
-                  <p className="m-0 mt-2 text-[11px] text-muted">Enter로 저장 · Shift+Enter로 줄바꿈 · 실제 AI 응답은 아직 제공되지 않습니다.</p>
+                  <p className="m-0 mt-2 text-[length:calc(11px*var(--font-scale))] text-muted">Enter로 보내기 · Shift+Enter로 줄바꿈</p>
                 </div>
               </>
             ) : (
@@ -252,20 +341,41 @@ export default function ChatPage() {
                 {weather.status === 'loading' && <p className="m-0 mt-3 text-sm">날씨를 불러오는 중…</p>}
                 {weather.status === 'success' && (
                   <>
-                    <div className="mt-3 font-display text-[30px] font-semibold">{Math.round(weather.value.temperature)}°C</div>
+                    <div className="mt-3 font-display text-[length:calc(30px*var(--font-scale))] font-semibold">{Math.round(weather.value.temperature)}°C</div>
                     <div className="text-sm">{weather.value.condition}</div>
-                    <div className="mt-2 text-[11px] opacity-80">{weather.value.location} · Open-Meteo</div>
+                    <div className="mt-2 text-[length:calc(11px*var(--font-scale))] opacity-80">{weather.value.location} · Open-Meteo</div>
                   </>
                 )}
                 {weather.status === 'error' && <p className="m-0 mt-3 text-xs leading-relaxed">{weather.message}</p>}
               </div>
               <div className="rounded-2xl bg-white border border-line p-4">
                 <h2 className="m-0 text-sm font-semibold text-ink">유명 관광지 혼잡도</h2>
-                <p className="m-0 mt-2 text-xs leading-relaxed text-muted">{active.region} 관광지별 실시간 혼잡도 데이터는 아직 연결되지 않았어요.</p>
-              </div>
-              <div className="rounded-2xl bg-white border border-line p-4">
-                <h2 className="m-0 text-sm font-semibold text-ink">숙소 평균 금액</h2>
-                <p className="m-0 mt-2 text-xs leading-relaxed text-muted">{active.region} 숙소 가격은 추후 숙박 데이터 API를 연결한 뒤 표시됩니다.</p>
+                {active.region !== '서울' && <p className="m-0 mt-2 text-xs leading-relaxed text-muted">현재 서울 지역만 지원해요.</p>}
+                {active.region === '서울' && congestionCatalog.status === 'idle' && <p className="m-0 mt-2 text-xs text-muted">관광지 목록을 불러오는 중…</p>}
+                {active.region === '서울' && congestionCatalog.status === 'error' && <p role="alert" className="m-0 mt-2 text-xs text-muted">{congestionCatalog.message}</p>}
+                {active.region === '서울' && congestionCatalog.status === 'success' && <>
+                  <p id="congestion-place-label" className="m-0 mt-3 text-xs text-muted">혼잡도를 확인할 관광지 (서울시 제공 {availablePlaces.length}곳)</p>
+                  <div role="group" aria-labelledby="congestion-place-label" className="mt-2 flex flex-wrap gap-1.5">
+                    {availablePlaces.map((place) => (
+                      <button key={place} type="button" aria-pressed={focusedPlace === place}
+                        onClick={() => setSelectedPlaceByChat((previous) => ({ ...previous, [active.id]: focusedPlace === place ? '' : place }))}
+                        className={`rounded-full border px-2.5 py-1 text-xs cursor-pointer ${focusedPlace === place
+                          ? 'border-teal-deep bg-teal-deep text-white' : 'border-line bg-white text-ink hover:border-teal'}`}>
+                        {place}
+                      </button>
+                    ))}
+                  </div>
+                  {!focusedPlace && <p className="m-0 mt-2 text-xs leading-relaxed text-muted">장소를 누르거나 채팅에서 “경복궁에 가고 싶어”처럼 말해보세요.</p>}
+                  {focusedPlace && (congestion.status === 'idle' || congestion.place !== focusedPlace) && <p className="m-0 mt-3 text-xs text-muted">{focusedPlace} 혼잡도를 불러오는 중…</p>}
+                  {focusedPlace && congestion.status === 'error' && congestion.place === focusedPlace && <p role="alert" className="m-0 mt-3 text-xs text-muted">{congestion.message}</p>}
+                  {focusedPlace && congestion.status === 'success' && congestion.place === focusedPlace && (
+                    congestion.value.status === 'ok' ? <>
+                      <div className="mt-3 text-xs text-ink">{focusedPlace} · <strong className="text-teal-deep">{congestion.value.places[0].level}</strong></div>
+                      <p className="m-0 mt-1 text-[length:calc(11px*var(--font-scale))] text-muted">{congestion.value.places[0].observedAt} 기준 · 서울시 실시간 도시데이터</p>
+                      <p className="m-0 mt-2 text-[length:calc(11px*var(--font-scale))] text-muted">현재 상태이며 여행 날짜의 예측은 아니에요.</p>
+                    </> : <p className="m-0 mt-3 text-xs leading-relaxed text-muted">{congestion.value.status === 'unconfigured' ? '서버 .env에 서울 열린데이터광장 OpenAPI 인증키를 입력해 주세요.' : congestion.value.status === 'invalid_config' ? '서버 .env의 서울시 API 주소를 확인해 주세요.' : congestion.value.status === 'invalid_key' ? '서울시 API가 인증키를 거부했어요. 서울 열린데이터광장의 OpenAPI 인증키를 확인해 주세요.' : '현재 이 장소의 혼잡도 정보가 제공되지 않아요.'}</p>
+                  )}
+                </>}
               </div>
               <button type="button" onClick={() => navigate('/map')} className="rounded-xl border border-line bg-white px-4 py-3 text-sm text-teal-deep font-semibold cursor-pointer">지도에서 장소 저장하기 →</button>
             </aside>

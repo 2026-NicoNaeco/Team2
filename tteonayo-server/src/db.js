@@ -7,6 +7,6 @@ const path = require('path');
 const adapter = new FileSync(process.env.TTEONAYO_DB_PATH || path.join(__dirname, '..', 'tteonayo.json'));
 const db = low(adapter);
 
-db.defaults({ users: [], nextId: 1, travelStates: [] }).write();
+db.defaults({ users: [], nextId: 1, travelStates: [], boards: [], boardMembers: [] }).write();
 
 module.exports = db;

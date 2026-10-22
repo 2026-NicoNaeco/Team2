@@ -44,10 +44,31 @@
   --font-sans: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont,
     'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', 'Pretendard Variable', Pretendard, monospace;
+
+  /* 글자 크기 설정(작게·보통·크게)에 따라 글자만 커지고 여백·배치는 그대로 둔다. */
+  --text-xs: calc(0.75rem * var(--font-scale));
+  --text-sm: calc(0.875rem * var(--font-scale));
+  --text-base: calc(1rem * var(--font-scale));
+  --text-lg: calc(1.125rem * var(--font-scale));
+  --text-xl: calc(1.25rem * var(--font-scale));
+  --text-2xl: calc(1.5rem * var(--font-scale));
+  --text-3xl: calc(1.875rem * var(--font-scale));
+  --text-4xl: calc(2.25rem * var(--font-scale));
+}
+
+:root {
+  --font-scale: 1;
+}
+:root[data-font-scale="small"] {
+  --font-scale: 0.9;
+}
+:root[data-font-scale="large"] {
+  --font-scale: 1.15;
 }
 
 body {
   margin: 0;
+  font-size: calc(1rem * var(--font-scale));
   background: var(--color-paper);
   color: var(--color-ink);
   font-family: var(--font-sans);
@@ -77,13 +98,32 @@ body {
 }
 
 .board-card:hover .board-connector,
-.board-card:focus-within .board-connector {
+.board-card:focus-within .board-connector,
+.board-card.is-selected .board-connector {
   opacity: 1;
   transform: scale(1);
   pointer-events: auto;
 }
 
+/* 카드 삭제 버튼도 마우스를 올리거나 선택했을 때만 보여 실수로 지우지 않게 한다. */
+.board-card-delete {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+
+.board-card:hover .board-card-delete,
+.board-card:focus-within .board-card-delete,
+.board-card.is-selected .board-card-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 @media (hover: none) {
+  .board-card-delete {
+    opacity: 1;
+    pointer-events: auto;
+  }
   .board-connector {
     opacity: 1;
     transform: scale(1);

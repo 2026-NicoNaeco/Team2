@@ -10,6 +10,7 @@ test('여행 데이터 가져오기·소유권·버전 충돌·검증', async ()
   const dbPath = path.join(testDir, 'travel.json');
   process.env.TTEONAYO_DB_PATH = dbPath;
   process.env.JWT_SECRET = 'test-secret-only-for-local-travel-api';
+  process.env.DATABASE_URL = '';
   const app = require('../src/index');
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -61,12 +62,15 @@ test('여행 데이터 가져오기·소유권·버전 충돌·검증', async ()
     assert.deepEqual((await request('/api/travel/state', 'GET', undefined, tokenB)).body.data.savedIds, ['b-place']);
     assert.equal((await request('/api/travel/state', 'GET', undefined, tokenA)).body.data.savedIds.length, 0);
 
-    const changed = { ...data, savedBoards: [{ ...data.savedBoards[0], title: '순천 수정 여행' }] };
+    const changed = { ...data, savedIds: ['other-place'] };
     assert.equal((await request('/api/travel/state', 'PUT', { version: 0, data: changed }, tokenA)).status, 409);
     const saved = await request('/api/travel/state', 'PUT', { version: 1, data: changed }, tokenA);
     assert.equal(saved.status, 200);
     assert.equal(saved.body.version, 2);
-    assert.equal((await request('/api/travel/state', 'GET', undefined, tokenA)).body.data.savedBoards[0].title, '순천 수정 여행');
+    assert.equal((await request('/api/travel/state', 'GET', undefined, tokenA)).body.data.savedBoards[0].title, '순천 여행');
+    assert.equal((await request('/api/travel/state', 'PUT', { version: 2, data: {
+      ...changed, savedBoards: [{ ...data.savedBoards[0], title: '허용되지 않는 변경' }],
+    } }, tokenA)).status, 409);
     assert.equal((await request('/api/travel/state', 'GET', undefined, tokenA)).body.data.savedBoards[0].connections[0].durationMinutes, 30);
     assert.equal((await request('/api/travel/state', 'GET', undefined, tokenA)).body.data.savedBoards[0].cards[2].description, '집합 장소 확인');
     assert.equal((await request('/api/travel/state', 'GET', undefined, tokenA)).body.data.savedBoards[0].cards[2].textWidth, 360);
@@ -83,10 +87,10 @@ test('여행 데이터 가져오기·소유권·버전 충돌·검증', async ()
     assert.equal((await request('/api/travel/state', 'PUT', { version: 2, data: invalidDuration }, tokenA)).status, 400);
     const fiftyTravelers = { ...changed, savedBoards: [{ ...changed.savedBoards[0], tripMeta: { ...data.savedBoards[0].tripMeta, partySize: 50 },
       tripPlaces: [{ ...data.savedBoards[0].tripPlaces[0], visitTime: '10:00', reservationTime: '10:30', timeMeaning: 'separate' }] }] };
-    assert.equal((await request('/api/travel/state', 'PUT', { version: 2, data: fiftyTravelers }, tokenA)).status, 200);
+    assert.equal((await request('/api/travel/state', 'PUT', { version: 2, data: fiftyTravelers }, tokenA)).status, 409);
     const savedTimes = (await request('/api/travel/state', 'GET', undefined, tokenA)).body.data.savedBoards[0].tripPlaces[0];
-    assert.equal(savedTimes.visitTime, '10:00');
-    assert.equal(savedTimes.reservationTime, '10:30');
+    assert.equal(savedTimes.visitTime, undefined);
+    assert.equal(savedTimes.reservationTime, undefined);
     const invalidTime = { ...fiftyTravelers, savedBoards: [{ ...fiftyTravelers.savedBoards[0],
       tripPlaces: [{ ...fiftyTravelers.savedBoards[0].tripPlaces[0], visitTime: '25:00' }] }] };
     assert.equal((await request('/api/travel/state', 'PUT', { version: 3, data: invalidTime }, tokenA)).status, 400);

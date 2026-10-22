@@ -9,6 +9,8 @@ import MapPage from './pages/MapPage';
 import ChatPage from './pages/ChatPage';
 import BoardPage from './pages/BoardPage';
 import DiaryPage from './pages/DiaryPage';
+import AccountPage from './pages/AccountPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
 
 function AppShell() {
   const { syncError, retrySync } = useTrip();
@@ -27,7 +29,9 @@ function AppShell() {
           <Route path="/map" element={<MapPage />} />
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/board" element={<BoardPage />} />
+          <Route path="/board/:boardId" element={<BoardPage />} />
           <Route path="/diary" element={<DiaryPage />} />
+          <Route path="/account" element={<AccountPage />} />
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
       </div>
@@ -41,6 +45,7 @@ export default function App() {
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route path="/" element={<Navigate to="/home" replace />} />
           <Route
             path="/*"

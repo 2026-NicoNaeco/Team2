@@ -78,27 +78,32 @@ export default function BoardTripControls() {
     <button type="button" onClick={save} className="rounded px-1.5 py-0.5 text-xs font-semibold text-teal-deep cursor-pointer">저장</button>
     <button type="button" onClick={cancel} className="rounded px-1.5 py-0.5 text-xs text-muted cursor-pointer">취소</button>
   </div>;
-  const setting = (field: Exclude<Field, 'totalBudget'>) => <div key={field} className="min-w-0 rounded-lg border border-line bg-white px-3 py-2">
-    <div className="mb-0.5 text-[11px] text-muted">{labels[field]}</div>
+  const overBudget = tripMeta.totalBudget != null && total > tripMeta.totalBudget;
+  // 라벨과 값을 한 줄에 붙여, 큰 칸 여러 개 대신 요약 한 줄로 읽히게 한다.
+  const setting = (field: Exclude<Field, 'totalBudget'>) => <div key={field}
+    className="flex min-w-0 items-baseline gap-2 border-r border-line px-3 py-1">
+    <span className="shrink-0 text-xs text-muted">{labels[field]}</span>
     {editing === field ? input(field) : <button type="button" onClick={() => begin(field)} title={`${labels[field]} 수정`}
-      className="max-w-full truncate border-none bg-transparent p-0 text-left text-sm font-semibold text-teal-deep cursor-pointer hover:underline focus-visible:underline">
+      className="max-w-full truncate border-none bg-transparent p-0 text-left text-sm font-semibold text-ink cursor-pointer hover:text-teal hover:underline focus-visible:underline">
       {display(field)}
     </button>}
     {editing === field && error && <div role="alert" className="mt-1 text-xs text-pin">{error}</div>}
   </div>;
 
   return <div className="mb-3 print:hidden">
-    <section aria-label="여행 설정" className="flex flex-wrap items-stretch gap-2">
+    <section aria-label="여행 설정"
+      className="flex min-w-0 max-w-[1600px] flex-wrap items-center gap-y-1 rounded-xl border border-line bg-white px-1 py-1.5">
       {setting('region')}{setting('startDate')}{setting('endDate')}{setting('partySize')}
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-white px-3 py-2 text-teal-deep">
+      <div className="flex min-w-0 flex-wrap items-baseline gap-2 px-3 py-1 text-teal-deep sm:ml-auto">
         <button type="button" onClick={() => setBudgetOpen((value) => !value)} aria-expanded={budgetOpen}
           className="flex items-baseline gap-2 border-none bg-transparent p-0 text-teal-deep cursor-pointer" title="예산 상세 보기">
-          <span className="text-xs text-muted">예상</span>
-          <strong className="font-mono text-[22px] leading-none tabular-nums">{total.toLocaleString('ko-KR')}원</strong>
+          <span className="text-xs text-muted">입력된 비용</span>
+          <strong className={`font-mono text-lg leading-none tabular-nums ${overBudget ? 'text-pin' : ''}`}>{total.toLocaleString('ko-KR')}원</strong>
         </button>
         <span className="text-xs text-muted">/ 예산</span>
         {editing === 'totalBudget' ? input('totalBudget') : <button type="button" onClick={() => begin('totalBudget')} title="전체 예산 수정"
-          className="border-none bg-transparent p-0 text-sm font-semibold text-teal-deep cursor-pointer hover:underline focus-visible:underline">{display('totalBudget')}</button>}
+          className="border-none bg-transparent p-0 text-sm font-semibold text-ink cursor-pointer hover:text-teal hover:underline focus-visible:underline">{display('totalBudget')}</button>}
+        {overBudget && <span className="text-xs font-semibold text-pin">예산 초과</span>}
       </div>
     </section>
     {editing === 'totalBudget' && error && <div role="alert" className="mt-1 text-xs text-pin">{error}</div>}

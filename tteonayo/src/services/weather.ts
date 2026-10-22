@@ -1,3 +1,5 @@
+import { SEOUL_COORDINATES } from './domesticRegions';
+
 export interface RegionWeather {
   location: string;
   temperature: number;
@@ -31,12 +33,13 @@ export async function fetchRegionWeather(
   options?: { countryCode?: 'KR'; coordinates?: { lat: number; lng: number } },
 ): Promise<RegionWeather> {
   let location: { name: string; country?: string; latitude: number; longitude: number } | undefined;
-  if (options?.coordinates) {
+  const coordinates = options?.coordinates ?? (/^서울(특별시)?$/.test(region.trim()) ? SEOUL_COORDINATES : undefined);
+  if (coordinates) {
     location = {
       name: region,
-      country: options.countryCode === 'KR' ? '대한민국' : undefined,
-      latitude: options.coordinates.lat,
-      longitude: options.coordinates.lng,
+      country: options?.countryCode === 'KR' ? '대한민국' : undefined,
+      latitude: coordinates.lat,
+      longitude: coordinates.lng,
     };
   } else {
     const geocodingUrl = new URL('https://geocoding-api.open-meteo.com/v1/search');
@@ -72,3 +75,4 @@ export async function fetchRegionWeather(
     observedAt: current.time ?? '',
   };
 }
+

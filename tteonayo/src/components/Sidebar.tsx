@@ -1,5 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import FontScaleControl from './FontScaleControl';
 
 const navItems = [
   {
@@ -47,7 +48,7 @@ export default function Sidebar() {
           key={item.to}
           to={item.to}
           className={({ isActive }) =>
-            `w-14 h-14 rounded-2xl flex flex-col items-center justify-center mb-2.5 text-[11px] gap-1 border transition-colors ${
+            `w-14 h-14 rounded-2xl flex flex-col items-center justify-center mb-2.5 text-[length:calc(11px*var(--font-scale))] gap-1 border transition-colors ${
               isActive
                 ? 'bg-teal text-white border-[#4C8F8A]'
                 : 'text-[#B7D2CE] border-transparent hover:bg-white/10'
@@ -72,12 +73,17 @@ export default function Sidebar() {
       ))}
 
       <div className="mt-auto flex flex-col items-center gap-2 pt-4">
+        <FontScaleControl />
         {user && (
-          <div className="text-[10px] text-[#B7D2CE] text-center leading-tight px-1">{user.name}님</div>
+          <div className="text-[length:calc(10px*var(--font-scale))] text-[#B7D2CE] text-center leading-tight px-1">{user.name}님</div>
         )}
+        <NavLink to="/account" className={({ isActive }) =>
+          `text-[length:calc(10px*var(--font-scale))] ${isActive ? 'text-white underline' : 'text-[#B7D2CE] hover:text-white'}`}>
+          계정 설정
+        </NavLink>
         <button
           onClick={logout}
-          className="text-[10px] text-[#B7D2CE] hover:text-white bg-transparent border-none cursor-pointer"
+          className="text-[length:calc(10px*var(--font-scale))] text-[#B7D2CE] hover:text-white bg-transparent border-none cursor-pointer"
         >
           로그아웃
         </button>
