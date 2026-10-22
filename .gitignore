@@ -9,6 +9,7 @@
 **/.env
 **/.env.*
 !**/.env.example
+!**/.env.local.example
 
 # 백엔드 로컬 DB (사용자 계정·비밀번호 해시 포함 — 절대 커밋 금지)
 tteonayo-server/tteonayo.json

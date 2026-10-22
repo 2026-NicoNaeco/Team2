@@ -1,0 +1,44 @@
+.main {
+  padding: 24px 32px;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  width: 100%;
+  max-width: 640px;
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+
+.card {
+  width: 100%;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.description {
+  margin-top: 8px;
+  margin-bottom: 24px;
+}
+
+.emailField {
+  margin-bottom: 20px;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.label {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.input {
+  width: 100%;
+  box-sizing: border-box;
+}

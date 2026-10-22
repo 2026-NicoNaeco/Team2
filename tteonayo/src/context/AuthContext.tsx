@@ -1,7 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import { clearPersistedTrip } from './TripContext';
 
-const API_BASE = 'http://localhost:4000';
+import { API_BASE_URL } from '../services/apiBase';
 
 interface User {
   id: number;
@@ -14,6 +13,9 @@ interface AuthContextValue {
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   signup: (email: string, password: string, name: string) => Promise<void>;
+  updateName: (name: string) => Promise<User>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
+  deleteAccount: (password: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -30,7 +32,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
-    fetch(`${API_BASE}/api/auth/me`, {
+    fetch(`${API_BASE_URL}/api/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => {
@@ -50,7 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function login(email: string, password: string) {
-    const res = await fetch(`${API_BASE}/api/auth/login`, {
+    const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
@@ -59,7 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function signup(email: string, password: string, name: string) {
-    const res = await fetch(`${API_BASE}/api/auth/signup`, {
+    const res = await fetch(`${API_BASE_URL}/api/auth/signup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password, name }),
@@ -67,14 +69,57 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await handleAuthResponse(res);
   }
 
+  async function updateName(name: string): Promise<User> {
+    const res = await fetch(`${API_BASE_URL}/api/auth/me`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` },
+      body: JSON.stringify({ name }),
+    });
+    const data = await res.json() as { user?: User; error?: string };
+    if (!res.ok || !data.user) throw new Error(data.error || '닉네임을 변경하지 못했어요.');
+    setUser(data.user);
+    return data.user;
+  }
+
+  async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    const res = await fetch(`${API_BASE_URL}/api/auth/password`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` },
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    const data = await res.json() as { token?: string; user?: User; error?: string };
+    if (!res.ok || !data.token || !data.user) throw new Error(data.error || '비밀번호를 변경하지 못했어요.');
+    localStorage.setItem('token', data.token);
+    setUser(data.user);
+  }
+
+  async function deleteAccount(password: string): Promise<void> {
+    const res = await fetch(`${API_BASE_URL}/api/auth/me`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token') ?? ''}` },
+      body: JSON.stringify({ password }),
+    });
+    const data = await res.json() as { error?: string };
+    if (!res.ok) throw new Error(data.error || '계정을 삭제하지 못했어요.');
+    if (user) {
+      const tripPrefix = `tteonayo:trip:user:${user.id}:`;
+      const exactKeys = new Set([`tteonayo:chat:${user.id}`, `tteonayo:board-draft-title:${user.id}`,
+        'tteonayo:trip', 'tteonayo:trip:v1', 'tteonayo:trip:v2', 'tteonayo:trip:v3', 'tteonayo:trip:v4']);
+      for (const key of Object.keys(localStorage)) {
+        if (key.startsWith(tripPrefix) || exactKeys.has(key)) localStorage.removeItem(key);
+      }
+    }
+    localStorage.removeItem('token');
+    setUser(null);
+  }
+
   function logout() {
     localStorage.removeItem('token');
-    clearPersistedTrip(); // 다음 사용자가 이전 사용자 데이터를 보지 않도록
     setUser(null);
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, signup, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, signup, updateName, changePassword, deleteAccount, logout }}>
       {children}
     </AuthContext.Provider>
   );
